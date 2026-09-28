@@ -6,3 +6,6 @@ __pycache__/
 .env.*
 *.pem
 *.key
+runtime/
+frontend/dist/
+frontend/.tmp-world.json
