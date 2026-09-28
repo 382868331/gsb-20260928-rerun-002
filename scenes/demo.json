@@ -1,0 +1,277 @@
+{
+  "activeCamera": {
+    "position": [
+      6,
+      6,
+      8
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ]
+  },
+  "nodes": {
+    "81561f699b8c": {
+      "children": [
+        "ecf4097a9768",
+        "ac85f0574120"
+      ],
+      "id": "81561f699b8c",
+      "name": "抓手",
+      "parent": "arm",
+      "position": [
+        3.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.6283185307179586,
+        0.2,
+        0.0
+      ],
+      "scale": [
+        0.5,
+        1.5,
+        1.0
+      ],
+      "type": "group"
+    },
+    "ac85f0574120": {
+      "children": [],
+      "id": "ac85f0574120",
+      "name": "传感器",
+      "parent": "81561f699b8c",
+      "position": [
+        -0.5,
+        0.3,
+        0.2
+      ],
+      "rotation": [
+        0.1,
+        -0.4,
+        0.9
+      ],
+      "scale": [
+        0.8,
+        1.2,
+        0.6
+      ],
+      "type": "sphere"
+    },
+    "arm": {
+      "children": [
+        "hand",
+        "cyl",
+        "81561f699b8c"
+      ],
+      "id": "arm",
+      "name": "小臂",
+      "parent": "rig",
+      "position": [
+        0.0,
+        1.0,
+        -1.0
+      ],
+      "rotation": [
+        0.0,
+        1.0471975511965976,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        2.0
+      ],
+      "type": "group"
+    },
+    "cube": {
+      "children": [],
+      "id": "cube",
+      "name": "红色夹块",
+      "parent": "hand",
+      "position": [
+        0.5,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.25
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "type": "cube"
+    },
+    "cyl": {
+      "children": [],
+      "id": "cyl",
+      "name": "立柱",
+      "parent": "arm",
+      "position": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "rotation": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "type": "cylinder"
+    },
+    "ecf4097a9768": {
+      "children": [],
+      "id": "ecf4097a9768",
+      "name": "红色夹块",
+      "parent": "81561f699b8c",
+      "position": [
+        0.5,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.25
+      ],
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "type": "cube"
+    },
+    "hand": {
+      "children": [
+        "cube",
+        "sphere"
+      ],
+      "id": "hand",
+      "name": "抓手",
+      "parent": "arm",
+      "position": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.6283185307179586,
+        0.2,
+        0.0
+      ],
+      "scale": [
+        0.5,
+        1.5,
+        1.0
+      ],
+      "type": "group"
+    },
+    "rig": {
+      "children": [
+        "arm"
+      ],
+      "id": "rig",
+      "name": "机械臂",
+      "parent": "root",
+      "position": [
+        2.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.4,
+        0.0,
+        0.2
+      ],
+      "scale": [
+        2.0,
+        0.5,
+        1.0
+      ],
+      "type": "group"
+    },
+    "root": {
+      "children": [
+        "rig"
+      ],
+      "id": "root",
+      "name": "底座",
+      "parent": null,
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.3,
+        0.0
+      ],
+      "scale": [
+        1.5,
+        1.5,
+        1.5
+      ],
+      "type": "group"
+    },
+    "solo": {
+      "children": [],
+      "id": "solo",
+      "name": "地面路标",
+      "parent": null,
+      "position": [
+        -3.0,
+        2.0,
+        1.0
+      ],
+      "rotation": [
+        0.2,
+        0.7,
+        -0.3
+      ],
+      "scale": [
+        1.0,
+        2.0,
+        1.0
+      ],
+      "type": "cone"
+    },
+    "sphere": {
+      "children": [],
+      "id": "sphere",
+      "name": "传感器",
+      "parent": "hand",
+      "position": [
+        -0.5,
+        0.3,
+        0.2
+      ],
+      "rotation": [
+        0.1,
+        -0.4,
+        0.9
+      ],
+      "scale": [
+        0.8,
+        1.2,
+        0.6
+      ],
+      "type": "sphere"
+    }
+  },
+  "rootOrder": [
+    "root",
+    "solo"
+  ],
+  "version": 1
+}
