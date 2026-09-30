@@ -33,10 +33,15 @@ export function Toolbar() {
   const instantiateAssembly = useStore((s) => s.instantiateAssembly);
   const detachAssembly = useStore((s) => s.detachAssembly);
   const deleteAssemblyDefinition = useStore((s) => s.deleteAssemblyDefinition);
+  const fetchUpdatePreview = useStore((s) => s.fetchUpdatePreview);
+  const pendingUpdates = useStore((s) => s.pendingUpdates);
+  const setPendingUpdates = useStore((s) => s.setPendingUpdates);
+  const applyAssemblyUpdate = useStore((s) => s.applyAssemblyUpdate);
   const selectedNode = useStore((s) =>
     s.scene.nodes.find((n) => n.id === s.selectedId) ?? null
   );
   const [assemblyChoice, setAssemblyChoice] = useState("");
+  const [previewing, setPreviewing] = useState(false);
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -108,6 +113,19 @@ export function Toolbar() {
         >
           放入实例
         </button>
+        <button
+          title="查看原件有更新的实例，逐项决定跟随原件还是保留局部覆盖"
+          onClick={async () => {
+            setPreviewing(true);
+            try {
+              await fetchUpdatePreview();
+            } finally {
+              setPreviewing(false);
+            }
+          }}
+        >
+          {previewing ? "检查中…" : "检查原件更新"}
+        </button>
       </div>
       <div className="tool-group">
         <button disabled={!canUndo} onClick={undo} title="Ctrl+Z">
@@ -136,6 +154,146 @@ export function Toolbar() {
         保存{dirty ? " ●" : ""}
       </button>
       <span className="status">{error ? "⚠ " + error : busy ?? ""}</span>
+      {pendingUpdates.length > 0 && (
+        <UpdateDialog
+          updates={pendingUpdates}
+          onClose={() => setPendingUpdates([])}
+          onApply={(assemblyId, choices) =>
+            applyAssemblyUpdate(assemblyId, choices).then(() => {
+              void fetchUpdatePreview();
+            })
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function UpdateDialog({
+  updates,
+  onClose,
+  onApply,
+}: {
+  updates: import("../lib/types").AssemblyUpdatePreview[];
+  onClose: () => void;
+  onApply: (
+    assemblyId: string,
+    choices: {
+      instanceIds?: string[];
+      overrides?: Record<string, "follow" | "keep">;
+      dropRemoved?: boolean;
+    }
+  ) => Promise<void>;
+}) {
+  const grouped = new Map<string, typeof updates>();
+  for (const item of updates) {
+    const list = grouped.get(item.assembly_id) ?? [];
+    list.push(item);
+    grouped.set(item.assembly_id, list);
+  }
+  const [choices, setChoices] = useState<Record<string, "follow" | "keep">>({});
+  const [dropRemoved, setDropRemoved] = useState(false);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal update-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>原件更新预览</h3>
+        <p className="modal-hint">
+          放弃更新不会改变场景；按装配件分组，逐个实例决定跟随原件或保留局部覆盖。
+        </p>
+        {[...grouped.entries()].map(([assemblyId, items]) => (
+          <div key={assemblyId} className="update-group">
+            <div className="update-group-title">
+              {items[0].assembly_name}（v{items[0].from_version} → v{items[0].to_version}）
+            </div>
+            {items.map((item) => (
+              <div key={item.instance_id} className="update-instance">
+                <div className="update-instance-head">
+                  <strong>{item.instance_name}</strong>
+                  <select
+                    value={choices[item.instance_id] ?? "follow"}
+                    onChange={(e) =>
+                      setChoices((prev) => ({
+                        ...prev,
+                        [item.instance_id]: e.target.value as "follow" | "keep",
+                      }))
+                    }
+                  >
+                    <option value="follow">跟随原件（丢弃本实例覆盖）</option>
+                    <option value="keep">保留局部覆盖（作为普通部件脱离）</option>
+                  </select>
+                </div>
+                {item.changed.length > 0 && (
+                  <ul className="update-list">
+                    {item.changed.map((change) => (
+                      <li key={change.template_id}>
+                        变化：{change.path}
+                        {change.has_local_override ? <em className="warn"> · 有局部覆盖</em> : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.removed.length > 0 && (
+                  <ul className="update-list">
+                    {item.removed.map((change) => (
+                      <li key={change.template_id} className="warn">
+                        失去对应关系：{change.path}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.slots_removed.length > 0 && (
+                  <ul className="update-list">
+                    {item.slots_removed.map((slot) => (
+                      <li key={slot.slot_key} className={slot.detached ? "" : "warn"}>
+                        嵌套装配件移除：{slot.name}
+                        {slot.detached ? "（此前已脱离）" : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.added.length > 0 && (
+                  <ul className="update-list">
+                    {item.added.map((change) => (
+                      <li key={change.template_id}>新增：{change.path}</li>
+                    ))}
+                  </ul>
+                )}
+                {item.slots_added.length > 0 && (
+                  <ul className="update-list">
+                    {item.slots_added.map((slot) => (
+                      <li key={slot.slot_key}>新增嵌套装配件槽</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+            <label className="drop-removed">
+              <input
+                type="checkbox"
+                checked={dropRemoved}
+                onChange={(e) => setDropRemoved(e.target.checked)}
+              />
+              删除失去对应关系的部件（默认保留为普通节点）
+            </label>
+            <div className="modal-actions">
+              <button
+                className="primary"
+                onClick={() =>
+                  void onApply(assemblyId, {
+                    instanceIds: items.map((item) => item.instance_id),
+                    overrides: choices,
+                    dropRemoved,
+                  })
+                }
+              >
+                应用本次更新（可撤销）
+              </button>
+              <button onClick={onClose}>放弃更新</button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

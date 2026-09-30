@@ -111,3 +111,15 @@ button.danger { color: #ffb3ba; }
 .modal p { margin: 6px 0; font-size: 13px; }
 .modal-hint { color: var(--muted); font-size: 12px !important; }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+.update-dialog { width: 640px; max-height: 82vh; overflow: auto; }
+.update-group { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin: 10px 0; }
+.update-group-title { font-weight: 600; margin-bottom: 6px; }
+.update-instance { border-top: 1px dashed var(--line); padding: 8px 0; }
+.update-instance-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.update-list { margin: 6px 0 0 18px; font-size: 12px; color: var(--muted); }
+.update-list .warn, .warn { color: #e0b06a; }
+.drop-removed { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: 8px 0; }
+.nested-slot { display: flex; gap: 6px; padding: 0 12px 8px; }
+.nested-slot select { flex: 1; height: 28px; font-size: 12px; }
+.nested-slot button { height: 28px; font-size: 12px; }

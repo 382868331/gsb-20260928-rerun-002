@@ -23,6 +23,7 @@ class AssemblyBinding(BaseModel):
     assembly_id: str
     instance_id: str
     template_id: str
+    path: List[str] = Field(default_factory=list)
 
 
 class Node(BaseModel):
@@ -41,12 +42,29 @@ class AssemblyOverride(BaseModel):
     scale: Optional[Vec3] = None
 
 
+class AssemblySlot(BaseModel):
+    """原件中嵌套的另一个装配件的引用。"""
+
+    key: str
+    assembly_id: str
+    pinned_version: int
+    parent_template_id: str
+    transform: Transform = Field(default_factory=Transform)
+
+
+class DetachedSlot(BaseModel):
+    """实例中已脱离原件的嵌套装配件所保留下来的节点子树。"""
+
+    node_ids: List[str] = Field(default_factory=list)
+
+
 class AssemblyDefinition(BaseModel):
     id: str
     name: str
     version: int = 1
     root_ids: List[str] = Field(default_factory=list)
     nodes: List[Node] = Field(default_factory=list)
+    slots: List[AssemblySlot] = Field(default_factory=list)
 
 
 class AssemblyInstance(BaseModel):
@@ -58,6 +76,20 @@ class AssemblyInstance(BaseModel):
     transform: Transform = Field(default_factory=Transform)
     node_map: dict[str, str] = Field(default_factory=dict)
     overrides: dict[str, AssemblyOverride] = Field(default_factory=dict)
+    pinned_version: int = 1
+    nested_instances: List["AssemblyInstance"] = Field(default_factory=list)
+    detached_slots: dict[str, DetachedSlot] = Field(default_factory=dict)
+    parent_instance_id: Optional[str] = None
+    slot_key: Optional[str] = None
+
+
+class SelectionRef(BaseModel):
+    """稳定的选中对象引用：刷新重生成节点 id 后仍能定位同一部件。"""
+
+    top_instance_id: Optional[str] = None
+    path: List[str] = Field(default_factory=list)
+    template_id: Optional[str] = None
+    node_id: Optional[str] = None
 
 
 class Scene(BaseModel):
@@ -66,6 +98,8 @@ class Scene(BaseModel):
     root_ids: List[str] = Field(default_factory=list)
     assembly_defs: List[AssemblyDefinition] = Field(default_factory=list)
     assembly_instances: List[AssemblyInstance] = Field(default_factory=list)
+    assembly_history: List[AssemblyDefinition] = Field(default_factory=list)
+    selection: Optional[SelectionRef] = None
 
     def index(self) -> dict:
         return {node.id: node for node in self.nodes}
@@ -119,6 +153,33 @@ class AssemblyTemplateReparentRequest(BaseModel):
     keep_world_transform: bool = True
 
 
+class AssemblySlotRequest(BaseModel):
+    scene: Scene
+    parent_definition_id: str
+    parent_template_node_id: str
+    assembly_id: str
+    position: Optional[Vec3] = None
+
+
+class AssemblyUpdatePreviewRequest(BaseModel):
+    scene: Scene
+    assembly_id: Optional[str] = None
+
+
+class AssemblyUpdateApplyRequest(BaseModel):
+    scene: Scene
+    assembly_id: str
+    instance_ids: List[str] = Field(default_factory=list)
+    # follow = 跟随原件丢弃覆盖；keep = 保留局部覆盖
+    overrides: dict[str, Literal["follow", "keep"]] = Field(default_factory=dict)
+    drop_removed: bool = False
+
+
+class SelectionRequest(BaseModel):
+    scene: Scene
+    selection: Optional[SelectionRef] = None
+
+
 class SceneId(BaseModel):
     scene_id: str
 
@@ -129,3 +190,6 @@ def transform_from_euler(position=None, euler=None, scale=None) -> Transform:
         rotation=quat_from_euler_xyz(*(euler if euler else [0.0, 0.0, 0.0])),
         scale=list(scale) if scale else [1.0, 1.0, 1.0],
     )
+
+
+AssemblyInstance.model_rebuild()

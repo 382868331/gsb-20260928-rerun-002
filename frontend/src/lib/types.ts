@@ -30,6 +30,8 @@ export interface Scene {
   root_ids: string[];
   assembly_defs: AssemblyDefinition[];
   assembly_instances: AssemblyInstance[];
+  assembly_history?: AssemblyDefinition[];
+  selection?: SelectionRef | null;
 }
 
 export interface AssemblyBinding {
@@ -46,6 +48,7 @@ export interface AssemblyDefinition {
   version: number;
   root_ids: string[];
   nodes: SceneNode[];
+  slots?: AssemblySlot[];
 }
 
 export interface AssemblyInstance {
@@ -57,6 +60,49 @@ export interface AssemblyInstance {
   transform: Transform;
   node_map: Record<string, string>;
   overrides: Record<string, AssemblyOverride>;
+  pinned_version: number;
+  nested_instances?: AssemblyInstance[];
+  detached_slots?: Record<string, DetachedSlot>;
+  parent_instance_id?: string | null;
+  slot_key?: string | null;
+}
+
+export interface SelectionRef {
+  top_instance_id?: string | null;
+  path?: string[];
+  template_id?: string | null;
+  node_id?: string | null;
+}
+
+export interface AssemblyChangeItem {
+  template_id: string;
+  name: string;
+  path: string;
+  has_local_override?: boolean;
+  live_node_id?: string | null;
+}
+
+export interface SlotChangeItem {
+  slot_key: string;
+  assembly_id: string;
+  name: string;
+  detached?: boolean;
+}
+
+export interface AssemblyUpdatePreview {
+  assembly_id: string;
+  assembly_name: string;
+  instance_id: string;
+  top_instance_id: string;
+  instance_name: string;
+  from_version: number;
+  to_version: number;
+  path: string[];
+  changed: AssemblyChangeItem[];
+  removed: AssemblyChangeItem[];
+  added: AssemblyChangeItem[];
+  slots_removed: SlotChangeItem[];
+  slots_added: SlotChangeItem[];
 }
 
 export interface WorldInfo {
@@ -79,3 +125,15 @@ export const PRIMITIVE_TYPES: NodeType[] = [
   "cone",
   "plane",
 ];
+
+export interface AssemblySlot {
+  key: string;
+  assembly_id: string;
+  pinned_version: number;
+  parent_template_id: string;
+  transform: Transform;
+}
+
+export interface DetachedSlot {
+  node_ids: string[];
+}

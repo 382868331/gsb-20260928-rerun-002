@@ -15,12 +15,16 @@ from pydantic import BaseModel
 from . import scene_ops
 from .models import (
     AddNodeRequest,
+    AssemblySlotRequest,
+    AssemblyUpdateApplyRequest,
+    AssemblyUpdatePreviewRequest,
     AssemblyTemplateReparentRequest,
     CreateAssemblyRequest,
     IdRequest,
     InstantiateAssemblyRequest,
     ReparentRequest,
     Scene,
+    SelectionRequest,
     TransformRequest,
 )
 from .storage import delete_scene, list_scenes, load_scene, save_scene
@@ -143,6 +147,44 @@ async def op_assembly_create(req: CreateAssemblyRequest):
 @app.post("/api/ops/assembly/instantiate")
 async def op_assembly_instantiate(req: InstantiateAssemblyRequest):
     return _run(scene_ops.instantiate_assembly, req.scene, req.assembly_id, req.parent_id, req.position)
+
+
+@app.post("/api/ops/assembly/add-slot")
+async def op_assembly_add_slot(req: AssemblySlotRequest):
+    return _run(
+        scene_ops.add_nested_slot,
+        req.scene,
+        req.parent_definition_id,
+        req.parent_template_node_id,
+        req.assembly_id,
+        req.position,
+    )
+
+
+@app.post("/api/ops/assembly/update-preview")
+async def op_assembly_update_preview(req: AssemblyUpdatePreviewRequest):
+    try:
+        return {"updates": scene_ops.assembly_update_preview(req.scene, req.assembly_id)}
+    except scene_ops.SceneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ops/assembly/update-apply")
+async def op_assembly_update_apply(req: AssemblyUpdateApplyRequest):
+    return _run(
+        scene_ops.apply_assembly_update,
+        req.scene,
+        req.assembly_id,
+        req.instance_ids,
+        req.overrides,
+        req.drop_removed,
+    )
+
+
+@app.post("/api/ops/selection")
+async def op_selection(req: SelectionRequest):
+    node_id = scene_ops.resolve_selection(req.scene, req.selection)
+    return {"node_id": node_id}
 
 
 @app.post("/api/ops/assembly/transform")

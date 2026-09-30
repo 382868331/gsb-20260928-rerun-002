@@ -1,4 +1,9 @@
-import type { Scene, WorldInfo } from "./types";
+import type {
+  AssemblyUpdatePreview,
+  Scene,
+  SelectionRef,
+  WorldInfo,
+} from "./types";
 
 const BASE = "/api";
 
@@ -119,6 +124,40 @@ export const api = {
       scene,
       assembly_id,
     }),
+  addAssemblySlot: (
+    scene: Scene,
+    parent_definition_id: string,
+    parent_template_node_id: string,
+    assembly_id: string,
+    position?: Vec3
+  ) =>
+    request<{ scene: Scene }>("/ops/assembly/add-slot", {
+      scene,
+      parent_definition_id,
+      parent_template_node_id,
+      assembly_id,
+      position,
+    }),
+  assemblyUpdatePreview: (scene: Scene, assembly_id?: string | null) =>
+    request<{ updates: AssemblyUpdatePreview[] }>("/ops/assembly/update-preview", {
+      scene,
+      assembly_id: assembly_id ?? null,
+    }),
+  assemblyUpdateApply: (
+    scene: Scene,
+    payload: {
+      assembly_id: string;
+      instance_ids?: string[];
+      overrides?: Record<string, "follow" | "keep">;
+      drop_removed?: boolean;
+    }
+  ) =>
+    request<{ scene: Scene }>("/ops/assembly/update-apply", {
+      scene,
+      ...payload,
+    }),
+  resolveSelection: (scene: Scene, selection: SelectionRef | null) =>
+    request<{ node_id: string | null }>("/ops/selection", { scene, selection }),
 };
 
 type Vec3 = [number, number, number];

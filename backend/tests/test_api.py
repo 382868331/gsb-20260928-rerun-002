@@ -120,3 +120,88 @@ def test_full_workflow_sync(tmp_path):
             await run_workflow(client)
 
     asyncio.run(main())
+
+
+def test_nested_assembly_update_workflow():
+    async def main():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.post("/api/scenes", json={})
+            scene = r.json()["scene"]
+
+            async def op(path, **kw):
+                nonlocal scene
+                resp = await client.post(f"/api/ops/{path}", json={"scene": scene, **kw})
+                assert resp.status_code == 200, (path, resp.text)
+                scene = resp.json()["scene"]
+                return resp.json()
+
+            await op("add-node", type="group", name="内总成")
+            inner_root = scene["root_ids"][0]
+            await op("add-node", type="cube", parent_id=inner_root, name="内件")
+            inner_part = next(n["id"] for n in scene["nodes"] if n["parent_id"] == inner_root)
+            await op("transform", node_id=inner_part, position=[1, 0, 0])
+            await op("assembly/create", node_id=inner_root, name="内装配件")
+            inner_def = scene["assembly_defs"][0]
+
+            await op("add-node", type="group", name="外总成")
+            outer_root = scene["root_ids"][0]
+            await op("assembly/create", node_id=outer_root, name="外装配件")
+            outer_def = next(d for d in scene["assembly_defs"] if d["id"] != inner_def["id"])
+
+            resp = await client.post(
+                "/api/ops/assembly/add-slot",
+                json={
+                    "scene": scene,
+                    "parent_definition_id": outer_def["id"],
+                    "parent_template_node_id": outer_def["root_ids"][0],
+                    "assembly_id": inner_def["id"],
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            scene = resp.json()["scene"]
+
+            preview = await client.post(
+                "/api/ops/assembly/update-preview",
+                json={"scene": scene, "assembly_id": outer_def["id"]},
+            )
+            updates = preview.json()["updates"]
+            assert len(updates) == 1 and updates[0]["slots_added"]
+
+            resp = await client.post(
+                "/api/ops/assembly/update-apply",
+                json={"scene": scene, "assembly_id": outer_def["id"], "overrides": {}},
+            )
+            assert resp.status_code == 200, resp.text
+            scene = resp.json()["scene"]
+            assert len(scene["assembly_instances"][0]["nested_instances"]) == 1
+
+            await op("assembly/instantiate", assembly_id=outer_def["id"], position=[5, 0, 0])
+            assert all(len(t["nested_instances"]) == 1 for t in scene["assembly_instances"])
+
+            nested_part = scene["assembly_instances"][1]["nested_instances"][0]["node_map"][inner_part]
+            await op("assembly/template-transform", node_id=nested_part, position=[0, 3, 0])
+            updates = (await client.post(
+                "/api/ops/assembly/update-preview",
+                json={"scene": scene, "assembly_id": inner_def["id"]},
+            )).json()["updates"]
+            assert len(updates) == 2 and all(u["path"] for u in updates)
+
+            resp = await client.post(
+                "/api/ops/assembly/add-slot",
+                json={
+                    "scene": scene,
+                    "parent_definition_id": inner_def["id"],
+                    "parent_template_node_id": inner_def["root_ids"][0],
+                    "assembly_id": outer_def["id"],
+                },
+            )
+            assert resp.status_code == 400 and "相互引用" in resp.json()["detail"]
+
+            ok = await client.post(
+                "/api/ops/assembly/template-transform",
+                json={"scene": scene, "node_id": nested_part, "position": [2, 0, 0]},
+            )
+            assert ok.status_code == 200
+
+    asyncio.run(main())

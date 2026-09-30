@@ -57,7 +57,10 @@ export function Inspector() {
   const detachAssembly = useStore((s) => s.detachAssembly);
   const assemblyEditMode = useStore((s) => s.assemblyEditMode);
   const setAssemblyEditMode = useStore((s) => s.setAssemblyEditMode);
+  const assemblies = useStore((s) => s.scene.assembly_defs);
+  const addNestedSlot = useStore((s) => s.addNestedSlot);
   const world = useStore((s) => s.world);
+  const [nestedChoice, setNestedChoice] = useState("");
 
   const node = scene.nodes.find((n) => n.id === selectedId) ?? null;
   const [eulerDeg, setEulerDeg] = useState<Vec3>([0, 0, 0]);
@@ -148,6 +151,34 @@ export function Inspector() {
             <p className="modal-hint">
               将更新 {linkedInstances.length} 个仍链接实例：
               {linkedInstances.map((item) => item.name).join("、")}
+            </p>
+          )}
+          {activeMode === "template" && assemblies.length > 0 && (
+            <div className="nested-slot">
+              <select
+                value={nestedChoice}
+                onChange={(e) => setNestedChoice(e.target.value)}
+                title="把另一个装配件作为嵌套引用放进当前原件"
+              >
+                <option value="">嵌套放入装配件…</option>
+                {assemblies.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} v{item.version}
+                  </option>
+                ))}
+              </select>
+              <button
+                disabled={!nestedChoice}
+                onClick={() => void addNestedSlot(nestedChoice).then(() => setNestedChoice(""))}
+              >
+                放入
+              </button>
+            </div>
+          )}
+          {activeMode === "template" && (
+            <p className="modal-hint">
+              编辑原件只提升版本；点工具栏「检查原件更新」可预览受影响实例，
+              相互引用的嵌套会被拒绝。
             </p>
           )}
         </>
