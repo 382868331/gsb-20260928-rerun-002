@@ -53,6 +53,10 @@ export function Inspector() {
   const scene = useStore((s) => s.scene);
   const selectedId = useStore((s) => s.selectedId);
   const updateTransform = useStore((s) => s.updateTransform);
+  const clearOverride = useStore((s) => s.clearOverride);
+  const detachAssembly = useStore((s) => s.detachAssembly);
+  const assemblyEditMode = useStore((s) => s.assemblyEditMode);
+  const setAssemblyEditMode = useStore((s) => s.setAssemblyEditMode);
   const world = useStore((s) => s.world);
 
   const node = scene.nodes.find((n) => n.id === selectedId) ?? null;
@@ -68,6 +72,28 @@ export function Inspector() {
   }, [node?.id, node?.transform.rotation.join(), node?.transform.scale.join()]);
 
   const worldInfo = world.find((w) => w.id === selectedId);
+  const definition = node?.assembly
+    ? scene.assembly_defs.find((item) => item.id === node.assembly!.assembly_id)
+    : null;
+  const instance = node?.assembly
+    ? scene.assembly_instances.find((item) => item.id === node.assembly!.instance_id)
+    : null;
+  const isAssemblyRoot = Boolean(
+    node?.assembly && definition && definition.root_ids.includes(node.assembly.template_id)
+  );
+  const activeMode = node?.assembly
+    ? isAssemblyRoot
+      ? "instance"
+      : assemblyEditMode
+    : "instance";
+  const hasOverride = Boolean(
+    node?.assembly && instance?.overrides[node.assembly.template_id]
+  );
+  const linkedInstances = node?.assembly
+    ? scene.assembly_instances.filter(
+        (item) => item.assembly_id === node.assembly?.assembly_id
+      )
+    : [];
 
   if (!node) {
     return (
@@ -86,13 +112,54 @@ export function Inspector() {
         <span className="badge">{node.type}</span>
       </div>
 
+      {node.assembly && definition && (
+        <>
+          <div className="inspector-section">
+            装配件：{definition.name}
+            <code className="assembly-version">v{definition.version}</code>
+          </div>
+          <div className="assembly-actions">
+            {!isAssemblyRoot && (
+              <select
+                value={activeMode}
+                onChange={(e) =>
+                  setAssemblyEditMode(e.target.value as "override" | "template")
+                }
+              >
+                <option value="override">本实例覆盖</option>
+                <option value="template">修改原件</option>
+              </select>
+            )}
+            <button onClick={() => void detachAssembly()}>
+              脱离原件
+            </button>
+            {hasOverride && (
+              <button onClick={() => void clearOverride()}>清除覆盖</button>
+            )}
+          </div>
+          <p className="modal-hint">
+            {activeMode === "template"
+              ? `正在修改原件 v${definition.version}，保存后仍链接该版本的实例会重新生成；已脱离实例不受影响。`
+              : isAssemblyRoot
+                ? "根节点位置保存在此实例上；复制实例可保留不同位置。"
+                : `这些值只覆盖当前实例，不影响原件和其他 ${Math.max(linkedInstances.length - 1, 0)} 个实例。`}
+          </p>
+          {activeMode === "template" && (
+            <p className="modal-hint">
+              将更新 {linkedInstances.length} 个仍链接实例：
+              {linkedInstances.map((item) => item.name).join("、")}
+            </p>
+          )}
+        </>
+      )}
+
       <div className="inspector-section">局部变换（相对父组）</div>
       <NumberRow
         label="位置"
         values={node.transform.position}
         step={0.1}
         suffix=""
-        onChange={(position) => void updateTransform({ position })}
+        onChange={(position) => void updateTransform({ position }, activeMode)}
       />
       <NumberRow
         label="旋转"
@@ -103,7 +170,7 @@ export function Inspector() {
           setEulerDeg(deg);
           void updateTransform({
             rotationEuler: [deg[0] * DEG2RAD, deg[1] * DEG2RAD, deg[2] * DEG2RAD],
-          });
+          }, activeMode);
         }}
       />
       <NumberRow
@@ -113,7 +180,7 @@ export function Inspector() {
         suffix="×"
         onChange={(scale) => {
           setScaleDraft(scale);
-          void updateTransform({ scale });
+          void updateTransform({ scale }, activeMode);
         }}
       />
 

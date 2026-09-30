@@ -28,6 +28,15 @@ export function Toolbar() {
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
   const selectedId = useStore((s) => s.selectedId);
+  const assemblies = useStore((s) => s.scene.assembly_defs);
+  const createAssembly = useStore((s) => s.createAssembly);
+  const instantiateAssembly = useStore((s) => s.instantiateAssembly);
+  const detachAssembly = useStore((s) => s.detachAssembly);
+  const deleteAssemblyDefinition = useStore((s) => s.deleteAssemblyDefinition);
+  const selectedNode = useStore((s) =>
+    s.scene.nodes.find((n) => n.id === s.selectedId) ?? null
+  );
+  const [assemblyChoice, setAssemblyChoice] = useState("");
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -61,8 +70,43 @@ export function Toolbar() {
         <button disabled={!selectedId} onClick={() => void duplicate()}>
           复制组
         </button>
+        <button disabled={!selectedId} onClick={() => void createAssembly()}>
+          制作装配件
+        </button>
         <button className="danger" disabled={!selectedId} onClick={() => void remove()}>
           删除
+        </button>
+        {selectedNode?.assembly && (
+          <>
+            <button onClick={() => void detachAssembly()}>脱离原件</button>
+            <button
+              title="删除原件；所有现有实例会自动脱离并保留在场景中"
+              onClick={() => void deleteAssemblyDefinition()}
+            >
+              删除原件
+            </button>
+          </>
+        )}
+      </div>
+      <div className="tool-group">
+        <select
+          value={assemblyChoice}
+          onChange={(e) => setAssemblyChoice(e.target.value)}
+          disabled={assemblies.length === 0}
+          title="选择要再次放入场景的装配件"
+        >
+          <option value="">装配件…</option>
+          {assemblies.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name} v{item.version}
+            </option>
+          ))}
+        </select>
+        <button
+          disabled={!assemblyChoice}
+          onClick={() => void instantiateAssembly(assemblyChoice)}
+        >
+          放入实例
         </button>
       </div>
       <div className="tool-group">

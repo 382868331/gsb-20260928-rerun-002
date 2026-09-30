@@ -63,7 +63,7 @@ export function HierarchyTree() {
     if (!askKeep) return;
     const { nodeId, parentId } = askKeep;
     setAskKeep(null);
-    await reparent(parentId, keepWorld);
+    await reparent(parentId, keepWorld, parentId);
   };
 
   const renderNode = (node: SceneNode, depth: number): React.ReactNode => {
@@ -121,6 +121,7 @@ export function HierarchyTree() {
           <span className="tree-name" title={node.id}>
             {node.name}
           </span>
+          {node.assembly && <span className="badge assembly">装配件</span>}
           <span className="tree-actions">
             <button
               title="复制整个组（含子物体）"

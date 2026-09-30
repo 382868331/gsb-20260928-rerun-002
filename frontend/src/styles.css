@@ -85,6 +85,10 @@ button.danger { color: #ffb3ba; }
 .inspector-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
 .badge { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; font-size: 11px; color: var(--muted); }
 .inspector-section { padding: 10px 12px 4px; font-size: 12px; color: var(--muted); }
+.assembly-version { margin-left: 8px; color: var(--text); }
+.assembly-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; }
+.assembly-actions select, .assembly-actions button { height: 28px; font-size: 12px; }
+.badge.assembly { margin-left: auto; color: #8ec5ff; border-color: #315174; background: #17283d; }
 
 .num-row { display: grid; grid-template-columns: 44px 1fr 1fr 1fr; gap: 6px; align-items: center; padding: 5px 12px; }
 .num-label { font-size: 12px; color: var(--muted); }

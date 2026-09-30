@@ -66,6 +66,59 @@ export const api = {
   ) => request<{ scene: Scene }>("/ops/transform", { scene, node_id, ...patch }),
   worldTransforms: (scene: Scene) =>
     request<{ world: WorldInfo[] }>("/ops/world-transforms", { scene }),
+  createAssembly: (scene: Scene, node_id: string, name?: string) =>
+    request<{ scene: Scene; root_id?: string }>("/ops/assembly/create", { scene, node_id, name }),
+  instantiateAssembly: (
+    scene: Scene,
+    assembly_id: string,
+    parent_id: string | null = null,
+    position?: Vec3
+  ) =>
+    request<{ scene: Scene; root_id?: string }>("/ops/assembly/instantiate", {
+      scene,
+      assembly_id,
+      parent_id,
+      position,
+    }),
+  assemblyTransform: (
+    scene: Scene,
+    node_id: string,
+    patch: { position?: Vec3; rotation_euler?: Vec3; scale?: Vec3 }
+  ) =>
+    request<{ scene: Scene }>("/ops/assembly/transform", { scene, node_id, ...patch }),
+  assemblyOverride: (
+    scene: Scene,
+    node_id: string,
+    patch: { position?: Vec3; rotation_euler?: Vec3; scale?: Vec3 }
+  ) =>
+    request<{ scene: Scene }>("/ops/assembly/override", { scene, node_id, ...patch }),
+  clearAssemblyOverride: (scene: Scene, node_id: string) =>
+    request<{ scene: Scene }>("/ops/assembly/override/clear", { scene, node_id }),
+  assemblyTemplateTransform: (
+    scene: Scene,
+    node_id: string,
+    patch: { position?: Vec3; rotation_euler?: Vec3; scale?: Vec3 }
+  ) =>
+    request<{ scene: Scene }>("/ops/assembly/template-transform", { scene, node_id, ...patch }),
+  assemblyTemplateReparent: (
+    scene: Scene,
+    node_id: string,
+    new_parent_node_id: string | null,
+    keep_world_transform: boolean
+  ) =>
+    request<{ scene: Scene }>("/ops/assembly/template-reparent", {
+      scene,
+      node_id,
+      new_parent_node_id,
+      keep_world_transform,
+    }),
+  detachAssembly: (scene: Scene, node_id: string) =>
+    request<{ scene: Scene }>("/ops/assembly/detach", { scene, node_id }),
+  deleteAssemblyDefinition: (scene: Scene, assembly_id: string) =>
+    request<{ scene: Scene }>("/ops/assembly/delete-definition", {
+      scene,
+      assembly_id,
+    }),
 };
 
 type Vec3 = [number, number, number];

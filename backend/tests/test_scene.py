@@ -170,3 +170,99 @@ def test_persistence_roundtrip(tmp_path, monkeypatch):
     assert {n.id for n in loaded.nodes} == {n.id for n in scene.nodes}
     assert loaded.root_ids == scene.root_ids
     assert storage.list_scenes()[0]["node_count"] == 4
+
+
+def build_assembly_scene():
+    scene = Scene()
+    scene = scene_ops.add_node(scene, "group", name="支架")
+    root_id = scene.root_ids[0]
+    scene = scene_ops.add_node(scene, "cube", parent_id=root_id, name="横臂")
+    part_id = scene.index()[root_id].children[0]
+    scene = scene_ops.update_transform(scene, part_id, position=[1, 0, 0])
+    scene = scene_ops.create_assembly(scene, root_id, name="支架装配件")
+    definition = scene.assembly_defs[0]
+    first = scene.assembly_instances[0]
+    scene = scene_ops.instantiate_assembly(scene, definition.id, position=[3, 0, 0])
+    second = scene.assembly_instances[-1]
+    return scene, definition, first, second, part_id
+
+
+def test_assembly_instances_update_from_source_and_keep_overrides():
+    scene, definition, first, second, part_template_id = build_assembly_scene()
+    second_part = second.node_map[part_template_id]
+    scene = scene_ops.set_assembly_override(scene, second_part, scale=[2, 3, 4])
+
+    first_part = first.node_map[part_template_id]
+    scene = scene_ops.update_assembly_template_transform(scene, first_part, position=[0, 2, 0])
+
+    assert definition.version == 1
+    refreshed_def = scene.assembly_defs[0]
+    assert refreshed_def.version == 2
+    refreshed_first = next(item for item in scene.assembly_instances if item.id == first.id)
+    refreshed_second = next(item for item in scene.assembly_instances if item.id == second.id)
+    assert refreshed_first.assembly_version == 2
+    assert refreshed_second.assembly_version == 2
+    idx = scene.index()
+    assert idx[refreshed_first.node_map[part_template_id]].transform.position == pytest.approx([0, 2, 0])
+    assert idx[refreshed_second.node_map[part_template_id]].transform.position == pytest.approx([0, 2, 0])
+    assert idx[refreshed_second.node_map[part_template_id]].transform.scale == pytest.approx([2, 3, 4])
+    assert refreshed_second.transform.position == pytest.approx([3, 0, 0])
+
+
+def test_detached_assembly_is_not_rebound_after_source_edit_or_reload(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCENE_STORE_DIR", str(tmp_path))
+    from backend import storage
+
+    scene, definition, first, second, part_template_id = build_assembly_scene()
+    first_root = first.node_map["__root__"]
+    scene = scene_ops.detach_assembly_instance(scene, first_root)
+    scene = scene_ops.update_assembly_template_transform(
+        scene, second.node_map[part_template_id], position=[0, 4, 0]
+    )
+    detached_part = first.node_map[part_template_id]
+    assert scene.index()[detached_part].assembly is None
+    assert scene.index()[detached_part].transform.position == pytest.approx([1, 0, 0])
+
+    storage.save_scene("assembly", scene)
+    loaded = storage.load_scene("assembly")
+    loaded_idx = loaded.index()
+    assert loaded_idx[detached_part].assembly is None
+    assert len(loaded.assembly_instances) == 1
+    assert loaded.assembly_instances[0].id == second.id
+
+
+def test_delete_assembly_definition_detaches_instances():
+    scene, definition, first, second, _ = build_assembly_scene()
+    generated = set(first.node_map.values()) | set(second.node_map.values())
+    deleted = scene_ops.delete_assembly_definition(scene, definition.id)
+    assert deleted.assembly_defs == []
+    assert deleted.assembly_instances == []
+    assert all(node.assembly is None for node in deleted.nodes if node.id in generated)
+    assert {node.id for node in deleted.nodes} >= generated
+
+
+def test_assembly_template_reparent_updates_linked_instances():
+    scene = Scene()
+    scene = scene_ops.add_node(scene, "group", name="原件根")
+    root_id = scene.root_ids[0]
+    scene = scene_ops.add_node(scene, "cube", parent_id=root_id, name="横臂")
+    arm_id = scene.index()[root_id].children[0]
+    scene = scene_ops.add_node(scene, "sphere", parent_id=root_id, name="立柱")
+    pillar_id = scene.index()[root_id].children[1]
+    scene = scene_ops.update_transform(scene, arm_id, position=[1, 0, 0])
+    before_matrices = {w["id"]: np.array(w["matrix"]) for w in scene_ops.world_summary(scene)}
+    scene = scene_ops.create_assembly(scene, root_id, name="可换层组件")
+    scene = scene_ops.instantiate_assembly(scene, scene.assembly_defs[0].id, position=[4, 0, 0])
+    instance = scene.assembly_instances[-1]
+    scene = scene_ops.reparent_assembly_template(
+        scene, instance.node_map[arm_id], instance.node_map[pillar_id], True
+    )
+    refreshed = scene.assembly_instances[0]
+    moved = scene.index()[refreshed.node_map[arm_id]]
+    assert moved.parent_id == refreshed.node_map[pillar_id]
+    after_matrices = {w["id"]: np.array(w["matrix"]) for w in scene_ops.world_summary(scene)}
+    assert np.allclose(
+        after_matrices[refreshed.node_map[arm_id]],
+        before_matrices[arm_id],
+        atol=1e-9,
+    )

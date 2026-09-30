@@ -15,6 +15,10 @@ function cloneScene(scene: Scene): Scene {
   return JSON.parse(JSON.stringify(scene));
 }
 
+function withAssemblyCollections(scene: Scene): Scene {
+  return { ...scene, assembly_defs: scene.assembly_defs ?? [], assembly_instances: scene.assembly_instances ?? [] };
+}
+
 interface State {
   sceneId: string | null;
   scene: Scene;
@@ -25,6 +29,7 @@ interface State {
   busy: string | null;
   error: string | null;
   dirty: boolean;
+  assemblyEditMode: "override" | "template";
 
   init: () => Promise<void>;
   loadScene: (id: string) => Promise<void>;
@@ -38,12 +43,19 @@ interface State {
   select: (id: string | null) => void;
   addNode: (type: string) => Promise<void>;
   groupSelected: () => Promise<void>;
-  reparent: (parentId: string | null, keepWorld: boolean) => Promise<void>;
+  reparent: (parentId: string | null, keepWorld: boolean, targetOverride?: string | null) => Promise<void>;
   duplicate: () => Promise<void>;
   remove: () => Promise<void>;
   updateTransform: (
-    patch: Partial<{ position: Vec3; rotationEuler: Vec3; scale: Vec3 }>
+    patch: Partial<{ position: Vec3; rotationEuler: Vec3; scale: Vec3 }>,
+    mode?: "instance" | "override" | "template"
   ) => Promise<void>;
+  createAssembly: (name?: string) => Promise<void>;
+  instantiateAssembly: (assemblyId: string) => Promise<void>;
+  clearOverride: () => Promise<void>;
+  detachAssembly: () => Promise<void>;
+  deleteAssemblyDefinition: () => Promise<void>;
+  setAssemblyEditMode: (mode: "override" | "template") => void;
 
   refreshWorld: () => Promise<void>;
   eulerOfSelected: () => Vec3 | null;
@@ -59,7 +71,8 @@ export const useStore = create<State>((set, get) => {
   ) => {
     set({ busy: "操作中…", error: null });
     try {
-      const { scene } = await promise;
+      const { scene: returned } = await promise;
+      const scene = withAssemblyCollections(returned);
       const prev = get().scene;
       set((s) => ({
         scene,
@@ -77,7 +90,7 @@ export const useStore = create<State>((set, get) => {
 
   return {
     sceneId: null,
-    scene: { version: 1, nodes: [], root_ids: [] },
+    scene: { version: 1, nodes: [], root_ids: [], assembly_defs: [], assembly_instances: [] },
     selectedId: null,
     world: [],
     past: [],
@@ -85,6 +98,7 @@ export const useStore = create<State>((set, get) => {
     busy: null,
     error: null,
     dirty: false,
+    assemblyEditMode: "override",
 
     async init() {
       const list = await api.listScenes().catch(() => ({ scenes: [] }));
@@ -96,7 +110,8 @@ export const useStore = create<State>((set, get) => {
     },
 
     async newScene() {
-      const { scene_id, scene } = await api.createScene();
+      const { scene_id, scene: created } = await api.createScene();
+      const scene = withAssemblyCollections(created);
       set({
         sceneId: scene_id,
         scene,
@@ -106,11 +121,13 @@ export const useStore = create<State>((set, get) => {
         world: [],
         dirty: false,
         error: null,
+        assemblyEditMode: "override",
       });
     },
 
     async loadScene(id) {
-      const { scene } = await api.loadScene(id);
+      const { scene: loaded } = await api.loadScene(id);
+      const scene = withAssemblyCollections(loaded);
       set({
         sceneId: id,
         scene,
@@ -119,6 +136,7 @@ export const useStore = create<State>((set, get) => {
         selectedId: null,
         dirty: false,
         error: null,
+        assemblyEditMode: "override",
       });
       await get().refreshWorld();
     },
@@ -154,6 +172,9 @@ export const useStore = create<State>((set, get) => {
         scene: previous,
         past: past.slice(0, -1),
         future: [scene, ...future].slice(0, HISTORY_LIMIT),
+        selectedId: previous.nodes.some((n) => n.id === get().selectedId)
+          ? get().selectedId
+          : null,
       });
       void get().refreshWorld();
     },
@@ -166,12 +187,19 @@ export const useStore = create<State>((set, get) => {
         scene: next,
         past: [...past, scene].slice(-HISTORY_LIMIT),
         future: future.slice(1),
+        selectedId: next.nodes.some((n) => n.id === get().selectedId)
+          ? get().selectedId
+          : null,
       });
       void get().refreshWorld();
     },
 
     select(id) {
       set({ selectedId: id });
+    },
+
+    setAssemblyEditMode(mode) {
+      set({ assemblyEditMode: mode });
     },
 
     async addNode(type) {
@@ -193,10 +221,40 @@ export const useStore = create<State>((set, get) => {
       await commit(api.group(scene, [selectedId]));
     },
 
-    async reparent(parentId, keepWorld) {
+    async reparent(parentId, keepWorld, targetOverride?: string | null) {
       const { scene, selectedId } = get();
       if (!selectedId) return;
-      await commit(api.reparent(scene, selectedId, parentId, keepWorld));
+      const dragged = nodeIndex(scene).get(selectedId);
+      const targetId = targetOverride ?? parentId;
+      const target = targetId ? nodeIndex(scene).get(targetId) : undefined;
+      if (
+        get().assemblyEditMode === "template" &&
+        dragged?.assembly &&
+        target?.assembly &&
+        dragged.assembly.instance_id === target.assembly.instance_id
+      ) {
+        const binding = dragged.assembly;
+        const result = await api.assemblyTemplateReparent(
+          scene,
+          selectedId,
+          targetId,
+          keepWorld
+        );
+        const next = withAssemblyCollections(result.scene);
+        const refreshed = next.assembly_instances.find(
+          (item) => item.id === binding.instance_id
+        );
+        await commit(
+          Promise.resolve({ scene: next }),
+          refreshed?.node_map[binding.template_id] ?? selectedId
+        );
+      } else {
+        if (dragged?.assembly && target?.assembly && dragged.assembly.instance_id === target.assembly.instance_id) {
+          set({ error: "当前是实例覆盖视角；切到检查器的修改原件模式后才能调整原件层级。" });
+          return;
+        }
+        await commit(api.reparent(scene, selectedId, parentId, keepWorld));
+      }
     },
 
     async duplicate() {
@@ -213,7 +271,7 @@ export const useStore = create<State>((set, get) => {
       await commit(Promise.resolve(next));
     },
 
-    async updateTransform(patch) {
+    async updateTransform(patch, mode = "instance") {
       const { scene, selectedId } = get();
       if (!selectedId) return;
       const node = nodeIndex(scene).get(selectedId);
@@ -222,7 +280,67 @@ export const useStore = create<State>((set, get) => {
       if (patch.position) body.position = patch.position;
       if (patch.rotationEuler) body.rotation_euler = patch.rotationEuler;
       if (patch.scale) body.scale = patch.scale;
-      await commit(api.transform(scene, selectedId, body));
+      if (!node.assembly) {
+        await commit(api.transform(scene, selectedId, body));
+      } else if (mode === "override") {
+        await commit(api.assemblyOverride(scene, selectedId, body));
+      } else if (mode === "template") {
+        const binding = node.assembly;
+        const result = await api.assemblyTemplateTransform(scene, selectedId, body);
+        const next = withAssemblyCollections(result.scene);
+        const refreshedInstance = next.assembly_instances.find(
+          (item) => item.id === binding.instance_id
+        );
+        await commit(
+          Promise.resolve({ scene: next }),
+          refreshedInstance?.node_map[binding.template_id] ?? selectedId
+        );
+      } else {
+        await commit(api.assemblyTransform(scene, selectedId, body));
+      }
+    },
+
+    async createAssembly(name) {
+      const { scene, selectedId } = get();
+      if (!selectedId) return;
+      const result = await api.createAssembly(scene, selectedId, name);
+      const beforeIds = new Set(scene.assembly_instances.map((item) => item.id));
+      const next = withAssemblyCollections(result.scene);
+      const created = next.assembly_instances.find((item) => !beforeIds.has(item.id));
+      await commit(Promise.resolve({ scene: next }), created?.node_map.__root__);
+    },
+
+    async instantiateAssembly(assemblyId) {
+      const { scene, selectedId } = get();
+      const selected = selectedId ? nodeIndex(scene).get(selectedId) : undefined;
+      const parentId = selected?.type === "group" && !selected.assembly ? selected.id : null;
+      const beforeIds = new Set(scene.assembly_instances.map((item) => item.id));
+      const result = await api.instantiateAssembly(scene, assemblyId, parentId, [0, 0, 0]);
+      const next = withAssemblyCollections(result.scene);
+      const created = next.assembly_instances.find((item) => !beforeIds.has(item.id));
+      await commit(Promise.resolve({ scene: next }), created?.node_map.__root__);
+    },
+
+    async clearOverride() {
+      const { scene, selectedId } = get();
+      if (!selectedId) return;
+      await commit(api.clearAssemblyOverride(scene, selectedId));
+    },
+
+    async detachAssembly() {
+      const { scene, selectedId } = get();
+      if (!selectedId) return;
+      await commit(api.detachAssembly(scene, selectedId));
+    },
+
+    async deleteAssemblyDefinition() {
+      const { scene, selectedId } = get();
+      const node = selectedId ? nodeIndex(scene).get(selectedId) : undefined;
+      if (!node?.assembly) return;
+      set({ selectedId: null });
+      await commit(
+        api.deleteAssemblyDefinition(scene, node.assembly.assembly_id)
+      );
     },
 
     async refreshWorld() {
