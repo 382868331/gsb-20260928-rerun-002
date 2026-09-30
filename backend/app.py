@@ -15,7 +15,11 @@ from pydantic import BaseModel
 from . import scene_ops
 from .models import (
     AddNodeRequest,
+    AssemblyCreateRequest,
+    AssemblyIdRequest,
+    AssemblyInstanceRequest,
     IdRequest,
+    NameRequest,
     ReparentRequest,
     Scene,
     TransformRequest,
@@ -115,6 +119,26 @@ async def op_duplicate(req: IdRequest):
     return _run(scene_ops.duplicate_subtree, req.scene, req.node_id)
 
 
+@app.post("/api/ops/assembly/create")
+async def op_assembly_create(req: AssemblyCreateRequest):
+    return _run(scene_ops.create_assembly, req.scene, req.node_id, req.name)
+
+
+@app.post("/api/ops/assembly/instantiate")
+async def op_assembly_instantiate(req: AssemblyInstanceRequest):
+    return _run(scene_ops.instantiate_assembly, req.scene, req.assembly_id, req.parent_id)
+
+
+@app.post("/api/ops/assembly/publish")
+async def op_assembly_publish(req: AssemblyIdRequest):
+    return _run(scene_ops.publish_assembly, req.scene, req.node_id)
+
+
+@app.post("/api/ops/assembly/detach")
+async def op_assembly_detach(req: AssemblyIdRequest):
+    return _run(scene_ops.detach_assembly, req.scene, req.node_id)
+
+
 @app.post("/api/ops/delete")
 async def op_delete(req: IdRequest):
     return _run(scene_ops.delete_subtree, req.scene, req.node_id)
@@ -130,6 +154,11 @@ async def op_transform(req: TransformRequest):
         req.rotation_euler,
         req.scale,
     )
+
+
+@app.post("/api/ops/name")
+async def op_name(req: NameRequest):
+    return _run(scene_ops.update_name, req.scene, req.node_id, req.name)
 
 
 @app.post("/api/ops/world-transforms")

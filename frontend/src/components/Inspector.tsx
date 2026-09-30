@@ -53,6 +53,9 @@ export function Inspector() {
   const scene = useStore((s) => s.scene);
   const selectedId = useStore((s) => s.selectedId);
   const updateTransform = useStore((s) => s.updateTransform);
+  const publishAssembly = useStore((s) => s.publishAssembly);
+  const detachAssembly = useStore((s) => s.detachAssembly);
+  const renameSelected = useStore((s) => s.renameSelected);
   const world = useStore((s) => s.world);
 
   const node = scene.nodes.find((n) => n.id === selectedId) ?? null;
@@ -68,6 +71,10 @@ export function Inspector() {
   }, [node?.id, node?.transform.rotation.join(), node?.transform.scale.join()]);
 
   const worldInfo = world.find((w) => w.id === selectedId);
+  const assemblyParent = node?.parent_id ? scene.nodes.find((n) => n.id === node.parent_id) : null;
+  const isAssemblyRoot = Boolean(
+    node?.assembly && assemblyParent?.assembly?.instance_id !== node.assembly.instance_id
+  );
 
   if (!node) {
     return (
@@ -82,9 +89,36 @@ export function Inspector() {
     <div className="panel inspector">
       <div className="panel-title">检查器</div>
       <div className="inspector-head">
-        <strong>{node.name}</strong>
+        <input
+          defaultValue={node.name}
+          onBlur={(e) => {
+            if (e.target.value.trim() && e.target.value !== node.name) {
+              void renameSelected(e.target.value);
+            }
+          }}
+        />
         <span className="badge">{node.type}</span>
       </div>
+      {node.assembly && (
+        <div className="assembly-panel">
+          <div>
+            装配件实例 <code>v{node.assembly.assembly_version}</code>
+          </div>
+          <div className="assembly-overrides">
+            覆盖：{node.assembly.overrides.length ? node.assembly.overrides.join("、") : "无"}
+          </div>
+          <div className="modal-actions">
+            {isAssemblyRoot && (
+              <button className="primary" onClick={() => void publishAssembly()} title="以当前实例更新原件，并同步其他链接实例">
+                发布原件修改
+              </button>
+            )}
+            <button onClick={() => void detachAssembly()} title="烘焙当前实例，之后不再随原件更新">
+              脱离原件
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="inspector-section">局部变换（相对父组）</div>
       <NumberRow

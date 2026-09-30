@@ -40,6 +40,11 @@ interface State {
   groupSelected: () => Promise<void>;
   reparent: (parentId: string | null, keepWorld: boolean) => Promise<void>;
   duplicate: () => Promise<void>;
+  createAssembly: () => Promise<void>;
+  instantiateAssembly: (assemblyId: string) => Promise<void>;
+  publishAssembly: () => Promise<void>;
+  detachAssembly: () => Promise<void>;
+  renameSelected: (name: string) => Promise<void>;
   remove: () => Promise<void>;
   updateTransform: (
     patch: Partial<{ position: Vec3; rotationEuler: Vec3; scale: Vec3 }>
@@ -77,7 +82,7 @@ export const useStore = create<State>((set, get) => {
 
   return {
     sceneId: null,
-    scene: { version: 1, nodes: [], root_ids: [] },
+    scene: { version: 1, nodes: [], root_ids: [], assemblies: [] },
     selectedId: null,
     world: [],
     past: [],
@@ -203,6 +208,37 @@ export const useStore = create<State>((set, get) => {
       const { scene, selectedId } = get();
       if (!selectedId) return;
       await commit(api.duplicate(scene, selectedId));
+    },
+
+    async createAssembly() {
+      const { scene, selectedId } = get();
+      if (!selectedId) return;
+      await commit(api.createAssembly(scene, selectedId));
+    },
+
+    async instantiateAssembly(assemblyId) {
+      const { scene, selectedId } = get();
+      const selected = selectedId ? nodeIndex(scene).get(selectedId) : undefined;
+      const parentId = selected?.type === "group" ? selectedId : null;
+      await commit(api.instantiateAssembly(scene, assemblyId, parentId));
+    },
+
+    async publishAssembly() {
+      const { scene, selectedId } = get();
+      if (!selectedId) return;
+      await commit(api.publishAssembly(scene, selectedId));
+    },
+
+    async detachAssembly() {
+      const { scene, selectedId } = get();
+      if (!selectedId) return;
+      await commit(api.detachAssembly(scene, selectedId));
+    },
+
+    async renameSelected(name) {
+      const { scene, selectedId } = get();
+      if (!selectedId || !name.trim()) return;
+      await commit(api.rename(scene, selectedId, name.trim()));
     },
 
     async remove() {

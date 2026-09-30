@@ -15,6 +15,8 @@ export function Toolbar() {
   const addNode = useStore((s) => s.addNode);
   const groupSelected = useStore((s) => s.groupSelected);
   const duplicate = useStore((s) => s.duplicate);
+  const createAssembly = useStore((s) => s.createAssembly);
+  const instantiateAssembly = useStore((s) => s.instantiateAssembly);
   const remove = useStore((s) => s.remove);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -28,6 +30,8 @@ export function Toolbar() {
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
   const selectedId = useStore((s) => s.selectedId);
+  const selectedNode = useStore((s) => s.scene.nodes.find((n) => n.id === s.selectedId));
+  const assemblies = useStore((s) => s.scene.assemblies);
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -59,8 +63,26 @@ export function Toolbar() {
           成组
         </button>
         <button disabled={!selectedId} onClick={() => void duplicate()}>
-          复制组
+          复制
         </button>
+        <button disabled={!selectedId || Boolean(selectedNode?.assembly)} onClick={() => void createAssembly()} title="把当前子树登记为可复用装配件">
+          制作装配件
+        </button>
+        {assemblies.length > 0 && (
+          <select
+            value=""
+            onChange={(e) => {
+              if (e.target.value) void instantiateAssembly(e.target.value);
+            }}
+          >
+            <option value="">放置装配件…</option>
+            {assemblies.map((assembly) => (
+              <option key={assembly.id} value={assembly.id}>
+                {assembly.name} v{assembly.version}
+              </option>
+            ))}
+          </select>
+        )}
         <button className="danger" disabled={!selectedId} onClick={() => void remove()}>
           删除
         </button>

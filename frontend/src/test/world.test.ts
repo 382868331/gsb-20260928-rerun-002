@@ -29,6 +29,7 @@ const ID: [number, number, number, number] = [0, 0, 0, 1];
 function buildScene(): Scene {
   return {
     version: 1,
+    assemblies: [],
     root_ids: [A, D],
     nodes: [
       node(A, "A", "group", null, { position: [1, 2, 3], rotation: qZ90, scale: [2, 2, 2] }, [B]),

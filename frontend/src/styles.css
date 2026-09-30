@@ -84,6 +84,13 @@ button.danger { color: #ffb3ba; }
 .inspector-empty { padding: 14px 12px; color: var(--muted); font-size: 13px; }
 .inspector-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
 .badge { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; font-size: 11px; color: var(--muted); }
+.badge.linked { color: #9fe0ff; border-color: #3b6d95; }
+.badge.part { color: #c8b8ff; font-size: 10px; }
+.assembly-panel { margin: 0 12px 8px; padding: 9px; border: 1px solid #33507a; border-radius: 8px; background: #172337; font-size: 12px; }
+.assembly-panel code { color: #9fe0b6; }
+.assembly-overrides { color: var(--muted); margin-top: 4px; }
+.assembly-panel .modal-actions { margin-top: 8px; }
+.inspector-head input { flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 5px 7px; }
 .inspector-section { padding: 10px 12px 4px; font-size: 12px; color: var(--muted); }
 
 .num-row { display: grid; grid-template-columns: 44px 1fr 1fr 1fr; gap: 6px; align-items: center; padding: 5px 12px; }

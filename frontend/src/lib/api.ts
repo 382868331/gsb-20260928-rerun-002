@@ -57,6 +57,14 @@ export const api = {
     }),
   duplicate: (scene: Scene, node_id: string) =>
     request<{ scene: Scene }>("/ops/duplicate", { scene, node_id }),
+  createAssembly: (scene: Scene, node_id: string, name?: string) =>
+    request<{ scene: Scene }>("/ops/assembly/create", { scene, node_id, name }),
+  instantiateAssembly: (scene: Scene, assembly_id: string, parent_id: string | null) =>
+    request<{ scene: Scene }>("/ops/assembly/instantiate", { scene, assembly_id, parent_id }),
+  publishAssembly: (scene: Scene, node_id: string) =>
+    request<{ scene: Scene }>("/ops/assembly/publish", { scene, node_id }),
+  detachAssembly: (scene: Scene, node_id: string) =>
+    request<{ scene: Scene }>("/ops/assembly/detach", { scene, node_id }),
   delete: (scene: Scene, node_id: string) =>
     request<{ scene: Scene }>("/ops/delete", { scene, node_id }),
   transform: (
@@ -66,6 +74,8 @@ export const api = {
   ) => request<{ scene: Scene }>("/ops/transform", { scene, node_id, ...patch }),
   worldTransforms: (scene: Scene) =>
     request<{ world: WorldInfo[] }>("/ops/world-transforms", { scene }),
+  rename: (scene: Scene, node_id: string, name: string) =>
+    request<{ scene: Scene }>("/ops/name", { scene, node_id, name }),
 };
 
 type Vec3 = [number, number, number];

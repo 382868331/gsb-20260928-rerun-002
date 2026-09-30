@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .models import Node, Scene, Transform
+from .models import AssemblyDefinition, AssemblyLink, AssemblyNode, Node, Scene, Transform
 from .transforms import compose, decompose, euler_xyz_from_quat, inverse, multiply, to_elements
 
 
@@ -102,6 +102,268 @@ def _new_id(existing: set) -> str:
     return nid
 
 
+def _assembly_index(scene: Scene):
+    return {assembly.id: assembly for assembly in scene.assemblies}
+
+
+def _instance_id(node: Node) -> Optional[str]:
+    return node.assembly.instance_id if node.assembly else None
+
+
+def _snapshot_assembly(assembly_id: str, name: str, index: Dict[str, Node], root_id: str) -> AssemblyDefinition:
+    nodes: List[AssemblyNode] = []
+    for nid in subtree_ids(index, root_id):
+        node = index[nid]
+        nodes.append(
+            AssemblyNode(
+                id=nid,
+                name=node.name,
+                type=node.type,
+                children=list(node.children),
+                transform=node.transform.model_copy(deep=True),
+            )
+        )
+    return AssemblyDefinition(id=assembly_id, name=name, root_id=root_id, nodes=nodes)
+
+
+def _is_assembly_root(node: Node, index: Dict[str, Node]) -> bool:
+    return node.assembly is not None and (
+        node.parent_id is None or _instance_id(index[node.parent_id]) != node.assembly.instance_id
+    )
+
+
+def _add_override(node: Node, key: str) -> None:
+    if node.assembly and key not in node.assembly.overrides:
+        node.assembly.overrides.append(key)
+
+
+def _apply_overrides(target: Node, source: Node) -> None:
+    if not target.assembly or not source.assembly:
+        return
+    overrides = list(source.assembly.overrides)
+    if "position" in overrides:
+        target.transform.position = list(source.transform.position)
+    if "rotation" in overrides:
+        target.transform.rotation = list(source.transform.rotation)
+    if "scale" in overrides:
+        target.transform.scale = list(source.transform.scale)
+    if "name" in overrides:
+        target.name = source.name
+    target.assembly.overrides = overrides
+    target.assembly.assembly_version = source.assembly.assembly_version
+
+
+def create_assembly(scene: Scene, root_id: str, name: Optional[str] = None) -> Scene:
+    """把现有子树登记为装配件原件，并把这棵子树标记为第一个链接实例。"""
+    scene = scene.model_copy(deep=True)
+    index = scene.index()
+    root = _require(index, root_id)
+    if root.assembly is not None:
+        raise SceneError("选中节点已经是装配件实例")
+
+    existing = set(index)
+    assembly_id = f"asm_{_new_id(existing)}"
+    instance_id = f"ins_{_new_id(existing)}"
+    definition = _snapshot_assembly(assembly_id, name or f"{root.name} 装配件", index, root_id)
+    scene.assemblies.append(definition)
+
+    for nid in subtree_ids(index, root_id):
+        index[nid].assembly = AssemblyLink(
+            assembly_id=assembly_id,
+            instance_id=instance_id,
+            part_id=nid,
+            assembly_version=1,
+            overrides=[],
+        )
+    return scene
+
+
+def _attach_assembly_nodes(
+    scene: Scene,
+    definition: AssemblyDefinition,
+    instance_id: str,
+    parent_id: Optional[str],
+    root_node_id: Optional[str] = None,
+    preserve_root_offset: bool = True,
+) -> str:
+    index = scene.index()
+    existing = set(index)
+    part_to_node: Dict[str, str] = {}
+    for part in definition.nodes:
+        part_to_node[part.id] = root_node_id if part.id == definition.root_id and root_node_id else _new_id(existing)
+
+    clones: List[Node] = []
+    for part in definition.nodes:
+        node_id = part_to_node[part.id]
+        template_parent = next((p for p in definition.nodes if part.id in p.children), None)
+        if part.id == definition.root_id:
+            node_parent = parent_id
+        elif template_parent is not None:
+            node_parent = part_to_node[template_parent.id]
+        else:
+            raise SceneError("装配件定义缺少父部件")
+        clones.append(
+            Node(
+                id=node_id,
+                name=part.name,
+                type=part.type,
+                parent_id=node_parent,
+                children=[part_to_node[cid] for cid in part.children],
+                transform=part.transform.model_copy(deep=True),
+                assembly=AssemblyLink(
+                    assembly_id=definition.id,
+                    instance_id=instance_id,
+                    part_id=part.id,
+                    assembly_version=definition.version,
+                    overrides=["position"] if part.id == definition.root_id else [],
+                ),
+            )
+        )
+
+    new_root_id = part_to_node[definition.root_id]
+    new_root = next(node for node in clones if node.id == new_root_id)
+    if preserve_root_offset:
+        new_root.transform.position = [new_root.transform.position[0] + 1.0, *new_root.transform.position[1:]]
+    scene.nodes.extend(clones)
+    if parent_id is None:
+        scene.root_ids.append(new_root_id)
+    else:
+        index[parent_id].children.append(new_root_id)
+    return new_root_id
+
+
+def instantiate_assembly(scene: Scene, assembly_id: str, parent_id: Optional[str] = None) -> Scene:
+    scene = scene.model_copy(deep=True)
+    definition = _require(_assembly_index(scene), assembly_id)
+    if parent_id is not None:
+        parent = _require(scene.index(), parent_id)
+        if parent.assembly is not None:
+            raise SceneError("不能把装配件实例直接嵌套到另一个装配件部件中")
+    existing = set(scene.index())
+    instance_id = f"ins_{_new_id(existing)}"
+    _attach_assembly_nodes(scene, definition, instance_id, parent_id)
+    return scene
+
+
+def detach_assembly(scene: Scene, root_id: str) -> Scene:
+    """把实例当前样子烘焙成普通节点；之后保存也不会重新绑定。"""
+    scene = scene.model_copy(deep=True)
+    index = scene.index()
+    root = _require(index, root_id)
+    if root.assembly is None:
+        raise SceneError("选中节点不是装配件实例")
+    for nid in subtree_ids(index, root_id):
+        index[nid].assembly = None
+    return scene
+
+
+def publish_assembly(scene: Scene, root_id: str) -> Scene:
+    """发布选中实例的当前层级，明确同步同一装配件的其他链接实例。"""
+    scene = scene.model_copy(deep=True)
+    index = scene.index()
+    root = _require(index, root_id)
+    if not _is_assembly_root(root, index):
+        raise SceneError("请选择装配件实例根节点")
+
+    assembly_id = root.assembly.assembly_id
+    definitions = _assembly_index(scene)
+    definition = _require(definitions, assembly_id)
+    selected_instance_id = root.assembly.instance_id
+    old_part_ids = {part.id for part in definition.nodes}
+
+    # 当前实例即新原件。给新增节点补 part_id，并清空当前实例的覆盖。
+    new_part_ids: Dict[str, str] = {}
+    existing = set(index)
+    for nid in subtree_ids(index, root_id):
+        node = index[nid]
+        if node.assembly and node.assembly.assembly_id == assembly_id and node.assembly.instance_id == selected_instance_id:
+            new_part_ids[nid] = node.assembly.part_id
+        else:
+            part_id = nid if nid not in old_part_ids else f"part_{_new_id(existing)}"
+            new_part_ids[nid] = part_id
+    for nid, part_id in new_part_ids.items():
+        index[nid].assembly = AssemblyLink(
+            assembly_id=assembly_id,
+            instance_id=selected_instance_id,
+            part_id=part_id,
+            assembly_version=definition.version + 1,
+            overrides=[],
+        )
+
+    new_nodes: List[AssemblyNode] = []
+    for nid in subtree_ids(index, root_id):
+        source = index[nid]
+        new_nodes.append(
+            AssemblyNode(
+                id=new_part_ids[nid],
+                name=source.name,
+                type=source.type,
+                children=[new_part_ids[cid] for cid in source.children],
+                transform=source.transform.model_copy(deep=True),
+            )
+        )
+    new_definition = AssemblyDefinition(
+        id=assembly_id,
+        name=definition.name,
+        version=definition.version + 1,
+        root_id=new_part_ids[root_id],
+        nodes=new_nodes,
+    )
+
+    other_roots = [
+        node
+        for node in scene.nodes
+        if node.assembly
+        and node.assembly.assembly_id == assembly_id
+        and node.assembly.instance_id != selected_instance_id
+        and _is_assembly_root(node, index)
+    ]
+
+    for old_root in other_roots:
+        instance_id = old_root.assembly.instance_id
+        parent_id = old_root.parent_id
+        preserved: Dict[str, Node] = {}
+        old_instance_nodes = [index[nid] for nid in subtree_ids(index, old_root.id)]
+        for node in old_instance_nodes:
+            if node.assembly and node.assembly.part_id in {part.id for part in new_definition.nodes}:
+                preserved[node.assembly.part_id] = node
+
+        if parent_id is None:
+            scene.root_ids = [rid for rid in scene.root_ids if rid != old_root.id]
+        else:
+            index[parent_id].children = [cid for cid in index[parent_id].children if cid != old_root.id]
+        removed = {n.id for n in old_instance_nodes}
+        scene.nodes = [node for node in scene.nodes if node.id not in removed]
+        for node in scene.nodes:
+            node.children = [cid for cid in node.children if cid not in removed]
+
+        new_root_node_id = old_root.id
+        _attach_assembly_nodes(
+            scene,
+            new_definition,
+            instance_id,
+            parent_id,
+            root_node_id=new_root_node_id,
+            preserve_root_offset=False,
+        )
+        new_index = scene.index()
+        rebuilt_root = new_index[new_root_node_id]
+        part_map = {}
+        for nid in subtree_ids(new_index, rebuilt_root.id):
+            n = new_index[nid]
+            if n.assembly:
+                part_map[n.assembly.part_id] = n
+        for part_id, old_node in preserved.items():
+            target = part_map.get(part_id)
+            if not target or not target.assembly:
+                continue
+            old_node.assembly.assembly_version = new_definition.version
+            _apply_overrides(target, old_node)
+
+    scene.assemblies = [new_definition if item.id == assembly_id else item for item in scene.assemblies]
+    return scene
+
+
 def add_node(
     scene: Scene,
     node_type: str,
@@ -131,6 +393,15 @@ def add_node(
         parent_id=parent_id,
         transform=Transform(position=list(position) if position else [0.0, 0.0, 0.0]),
     )
+    parent = index.get(parent_id) if parent_id else None
+    if parent is not None and parent.assembly is not None:
+        node.assembly = AssemblyLink(
+            assembly_id=parent.assembly.assembly_id,
+            instance_id=parent.assembly.instance_id,
+            part_id=nid,
+            assembly_version=parent.assembly.assembly_version,
+            overrides=[],
+        )
     scene.nodes.append(node)
     if parent_id is None:
         scene.root_ids.append(nid)
@@ -171,6 +442,19 @@ def create_group_with_selection(scene: Scene, child_ids: List[str]) -> Scene:
         ),
     )
     scene.nodes.append(group)
+    linked_children = [index[cid].assembly for cid in child_ids if index[cid].assembly]
+    if linked_children:
+        instance_ids = {link.instance_id for link in linked_children}
+        if len(instance_ids) != 1:
+            raise SceneError("不能把不同装配件实例的部件成组到一起")
+        link = linked_children[0]
+        group.assembly = AssemblyLink(
+            assembly_id=link.assembly_id,
+            instance_id=link.instance_id,
+            part_id=group_id,
+            assembly_version=link.assembly_version,
+            overrides=[],
+        )
     if parent_id is None:
         scene.root_ids.append(group_id)
     else:
@@ -214,6 +498,15 @@ def reparent(
         raise SceneError("检测到循环挂接：不能把组挂到它自己的子物体下面")
     if node.parent_id == new_parent_id:
         return scene
+    new_parent = index[new_parent_id] if new_parent_id is not None else None
+    if node.assembly is not None and not _is_assembly_root(node, index):
+        if new_parent is None or new_parent.assembly is None or new_parent.assembly.instance_id != node.assembly.instance_id:
+            raise SceneError("装配件内部部件不能单独换出；请先脱离原件或移动实例根节点")
+    if node.assembly is not None and _is_assembly_root(node, index) and new_parent is not None:
+        if new_parent.assembly is not None and new_parent.assembly.instance_id != node.assembly.instance_id:
+            raise SceneError("不能把装配件实例根嵌入另一个装配件内部")
+    if node.assembly is None and new_parent is not None and new_parent.assembly is not None:
+        raise SceneError("普通节点不能直接移入装配件实例；请在原件中新增部件后发布")
 
     if keep_world_transform:
         matrices = world_matrices(scene)
@@ -243,14 +536,43 @@ def reparent(
             rotation=[float(v) for v in quat],
             scale=[float(v) for v in scl],
         )
+        if _is_assembly_root(node, scene.index()):
+            node.assembly.overrides = [
+                key for key in node.assembly.overrides if key in ("name",)
+            ]
+            for key in ("position", "rotation", "scale"):
+                _add_override(node, key)
     return scene
 
 
 def duplicate_subtree(scene: Scene, node_id: str) -> Scene:
-    """深复制整个组（含全部后代），父子关系完整保留，副本放在同一父级。"""
+    """复制节点；装配件实例根复制为新的链接实例，普通节点深复制。"""
     scene = scene.model_copy(deep=True)
     index = scene.index()
-    _require(index, node_id)
+    node = _require(index, node_id)
+
+    if _is_assembly_root(node, index):
+        definition = _require(_assembly_index(scene), node.assembly.assembly_id)
+        existing = set(index)
+        instance_id = f"ins_{_new_id(existing)}"
+        new_root_id = _attach_assembly_nodes(scene, definition, instance_id, node.parent_id)
+        new_index = scene.index()
+        source_parts = {
+            item.assembly.part_id: item
+            for item_id in subtree_ids(index, node_id)
+            for item in [index[item_id]]
+            if item.assembly
+        }
+        for new_id in subtree_ids(new_index, new_root_id):
+            target = new_index[new_id]
+            source = source_parts.get(target.assembly.part_id) if target.assembly else None
+            if source is not None:
+                _apply_overrides(target, source)
+        new_root = new_index[new_root_id]
+        new_root.name = f"{node.name} 副本"
+        _add_override(new_root, "name")
+        new_root.transform.position[0] += 1.0
+        return scene
 
     ids = subtree_ids(index, node_id)
     id_map: Dict[str, str] = {}
@@ -266,6 +588,8 @@ def duplicate_subtree(scene: Scene, node_id: str) -> Scene:
         clone.parent_id = id_map[old.parent_id] if old.parent_id in id_map else old.parent_id
         clone.children = []  # 深拷贝会带旧子 id，统一在下面重新挂载
         clone.name = f"{old.name} 副本"
+        if clone.assembly is not None:
+            clone.assembly.part_id = clone.id
         clones.append(clone)
 
     # 先全部加入节点表，再挂父子关系
@@ -301,6 +625,14 @@ def delete_subtree(scene: Scene, node_id: str) -> Scene:
     return scene
 
 
+def update_name(scene: Scene, node_id: str, name: str) -> Scene:
+    scene = scene.model_copy(deep=True)
+    node = _require(scene.index(), node_id)
+    node.name = name
+    _add_override(node, "name")
+    return scene
+
+
 def update_transform(
     scene: Scene,
     node_id: str,
@@ -314,8 +646,11 @@ def update_transform(
     node = _require(scene.index(), node_id)
     if position is not None:
         node.transform.position = [float(v) for v in position]
+        _add_override(node, "position")
     if rotation_euler is not None:
         node.transform.rotation = [float(v) for v in quat_from_euler_xyz(*rotation_euler)]
+        _add_override(node, "rotation")
     if scale is not None:
         node.transform.scale = [float(v) for v in scale]
+        _add_override(node, "scale")
     return scene

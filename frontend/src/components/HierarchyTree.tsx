@@ -35,6 +35,19 @@ function isDescendant(scene: Scene, ancestorId: string, nodeId: string | null) {
   return false;
 }
 
+function assemblyRootOf(scene: Scene, nodeId: string): SceneNode | null {
+  const index = new Map(scene.nodes.map((n) => [n.id, n]));
+  let current = index.get(nodeId) ?? null;
+  let root = current;
+  while (current?.assembly && current.parent_id) {
+    const parent = index.get(current.parent_id);
+    if (parent?.assembly?.instance_id !== current.assembly.instance_id) break;
+    current = parent;
+    root = current;
+  }
+  return root && root.assembly ? root : null;
+}
+
 export function HierarchyTree() {
   const scene = useStore((s) => s.scene);
   const selectedId = useStore((s) => s.selectedId);
@@ -71,6 +84,8 @@ export function HierarchyTree() {
     const isOpen = !collapsed.has(node.id);
     const selected = node.id === selectedId;
     const dragover = dropTarget === node.id;
+    const assemblyRoot = assemblyRootOf(scene, node.id);
+    const isAssemblyRoot = assemblyRoot?.id === node.id;
     const invalidDrop =
       dragId !== null &&
       (dragId === node.id || isDescendant(scene, dragId, node.id));
@@ -121,6 +136,11 @@ export function HierarchyTree() {
           <span className="tree-name" title={node.id}>
             {node.name}
           </span>
+          {node.assembly && (
+            <span className={"badge" + (isAssemblyRoot ? " linked" : " part")} title={`装配件 v${node.assembly.assembly_version}`}>
+              {isAssemblyRoot ? "装配件" : "部件"}
+            </span>
+          )}
           <span className="tree-actions">
             <button
               title="复制整个组（含子物体）"
