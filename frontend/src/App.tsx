@@ -4,6 +4,7 @@ import { Toolbar } from "./components/Toolbar";
 import { HierarchyTree } from "./components/HierarchyTree";
 import { Inspector } from "./components/Inspector";
 import { Viewport } from "./components/Viewport";
+import { UpdateDialog } from "./components/UpdateDialog";
 
 export function App() {
   const init = useStore((s) => s.init);
@@ -41,6 +42,7 @@ export function App() {
         <Viewport />
         <Inspector />
       </div>
+      <UpdateDialog />
     </div>
   );
 }

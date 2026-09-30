@@ -10,7 +10,7 @@ from .transforms import quat_from_euler_xyz
 
 Vec3 = List[float]
 Quat = List[float]
-NodeType = Literal["group", "cube", "sphere", "cylinder", "cone", "plane"]
+NodeType = Literal["group", "cube", "sphere", "cylinder", "cone", "plane", "assembly"]
 
 
 class Transform(BaseModel):
@@ -23,6 +23,10 @@ class AssemblyBinding(BaseModel):
     assembly_id: str
     instance_id: str
     template_id: str
+    # 原件中该模板节点若是一个子装配件占位，则指向子装配件定义；
+    # 场景中对应节点上记录这里面是哪个子实例（child_instance_id）。
+    nested_assembly_id: Optional[str] = None
+    child_instance_id: Optional[str] = None
 
 
 class Node(BaseModel):
@@ -33,6 +37,8 @@ class Node(BaseModel):
     children: List[str] = Field(default_factory=list)
     transform: Transform = Field(default_factory=Transform)
     assembly: Optional[AssemblyBinding] = None
+    # 仅用于装配件定义里的模板节点：该占位引用的子装配件
+    nested_assembly_id: Optional[str] = None
 
 
 class AssemblyOverride(BaseModel):
@@ -58,6 +64,19 @@ class AssemblyInstance(BaseModel):
     transform: Transform = Field(default_factory=Transform)
     node_map: dict[str, str] = Field(default_factory=dict)
     overrides: dict[str, AssemblyOverride] = Field(default_factory=dict)
+    # 父实例（当本实例是某个装配件内部的子装配件时）与占位模板节点
+    parent_instance_id: Optional[str] = None
+    host_template_id: Optional[str] = None
+    # 更新策略（选择式接收原件更新）：follow = 跟随原件；keep = 保留本实例现状
+    part_policies: dict[str, str] = Field(default_factory=dict)
+    # 选择性更新基线：版本低于定义版本时，保存当时的定义，供预览/应用更新使用
+    baseline_version: int = 1
+    baseline_nodes: List[Node] = Field(default_factory=list)
+    baseline_root_ids: List[str] = Field(default_factory=list)
+    # 脱离原件后烘焙的定义快照：此后不再跟随任何原件更新
+    detached: bool = False
+    detached_nodes: List[Node] = Field(default_factory=list)
+    detached_root_ids: List[str] = Field(default_factory=list)
 
 
 class Scene(BaseModel):
@@ -66,6 +85,8 @@ class Scene(BaseModel):
     root_ids: List[str] = Field(default_factory=list)
     assembly_defs: List[AssemblyDefinition] = Field(default_factory=list)
     assembly_instances: List[AssemblyInstance] = Field(default_factory=list)
+    # 选中对象的稳定路径（保存/重开后保持选中）
+    selected_path: Optional[str] = None
 
     def index(self) -> dict:
         return {node.id: node for node in self.nodes}
@@ -117,6 +138,12 @@ class AssemblyTemplateReparentRequest(BaseModel):
     node_id: str
     new_parent_node_id: Optional[str] = None
     keep_world_transform: bool = True
+
+
+class AssemblyUpdateApplyRequest(BaseModel):
+    scene: Scene
+    # 受影响实例 id -> {模板节点 id: "follow" | "keep"}
+    choices: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 class SceneId(BaseModel):

@@ -1,7 +1,13 @@
 import { create } from "zustand";
 import * as THREE from "three";
 import { api } from "./api";
-import type { Scene, SceneNode, Vec3, WorldInfo } from "./types";
+import type {
+  AssemblyPending,
+  Scene,
+  SceneNode,
+  Vec3,
+  WorldInfo,
+} from "./types";
 
 const HISTORY_LIMIT = 100;
 
@@ -13,6 +19,53 @@ function eulerOf(node: SceneNode): Vec3 {
 
 function cloneScene(scene: Scene): Scene {
   return JSON.parse(JSON.stringify(scene));
+}
+
+function resolveSelectedLocal(scene: Scene): string | null {
+  if (!scene.selected_path) return null;
+  const index = nodeIndexLocal(scene);
+  const instances = new Map(scene.assembly_instances.map((i) => [i.id, i]));
+  let current: string | null = null;
+  for (const segment of scene.selected_path.split("/")) {
+    if (segment.startsWith("i:")) {
+      const [, instanceId, templateId] = segment.split(":");
+      const inst = instances.get(instanceId);
+      const candidate = inst?.node_map[templateId];
+      if (!candidate || !index.has(candidate)) return null;
+      current = candidate;
+    } else {
+      const id = segment.slice(2);
+      const node = index.get(id);
+      if (!node) return null;
+      if (current !== null && node.parent_id !== current) return null;
+      current = id;
+    }
+  }
+  return current;
+}
+
+function nodeIndexLocal(scene: Scene) {
+  return new Map(scene.nodes.map((n) => [n.id, n]));
+}
+
+export function selectionPath(scene: Scene, nodeId: string | null): string | null {
+  if (!nodeId) return null;
+  const index = nodeIndexLocal(scene);
+  const segments: string[] = [];
+  let current: string | null = nodeId;
+  const seen = new Set<string>();
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const node = index.get(current);
+    if (!node) return null;
+    if (node.assembly) {
+      segments.push(`i:${node.assembly.instance_id}:${node.assembly.template_id}`);
+    } else {
+      segments.push(`n:${node.id}`);
+    }
+    current = node.parent_id;
+  }
+  return segments.reverse().join("/");
 }
 
 function withAssemblyCollections(scene: Scene): Scene {
@@ -30,6 +83,7 @@ interface State {
   error: string | null;
   dirty: boolean;
   assemblyEditMode: "override" | "template";
+  pendingUpdates: AssemblyPending[];
 
   init: () => Promise<void>;
   loadScene: (id: string) => Promise<void>;
@@ -56,6 +110,10 @@ interface State {
   detachAssembly: () => Promise<void>;
   deleteAssemblyDefinition: () => Promise<void>;
   setAssemblyEditMode: (mode: "override" | "template") => void;
+  refreshPendingUpdates: () => Promise<void>;
+  applyAssemblyUpdates: (
+    choices: Record<string, Record<string, "follow" | "keep">>
+  ) => Promise<void>;
 
   refreshWorld: () => Promise<void>;
   eulerOfSelected: () => Vec3 | null;
@@ -74,15 +132,20 @@ export const useStore = create<State>((set, get) => {
       const { scene: returned } = await promise;
       const scene = withAssemblyCollections(returned);
       const prev = get().scene;
+      const prevPath = selectionPath(prev, get().selectedId);
+      if (prevPath) scene.selected_path = prevPath;
+      const resolvedSelected =
+        selectId !== undefined ? selectId : resolveSelectedLocal(scene);
       set((s) => ({
         scene,
         past: [...s.past, prev].slice(-HISTORY_LIMIT),
         future: [],
         busy: null,
         dirty: true,
-        selectedId: selectId ?? s.selectedId,
+        selectedId: resolvedSelected,
       }));
       await get().refreshWorld();
+      void get().refreshPendingUpdates();
     } catch (err) {
       set({ busy: null, error: (err as Error).message });
     }
@@ -99,6 +162,7 @@ export const useStore = create<State>((set, get) => {
     error: null,
     dirty: false,
     assemblyEditMode: "override",
+    pendingUpdates: [],
 
     async init() {
       const list = await api.listScenes().catch(() => ({ scenes: [] }));
@@ -122,6 +186,7 @@ export const useStore = create<State>((set, get) => {
         dirty: false,
         error: null,
         assemblyEditMode: "override",
+        pendingUpdates: [],
       });
     },
 
@@ -133,12 +198,14 @@ export const useStore = create<State>((set, get) => {
         scene,
         past: [],
         future: [],
-        selectedId: null,
+        selectedId: resolveSelectedLocal(scene),
         dirty: false,
         error: null,
         assemblyEditMode: "override",
+        pendingUpdates: [],
       });
       await get().refreshWorld();
+      void get().refreshPendingUpdates();
     },
 
     async save() {
@@ -172,11 +239,10 @@ export const useStore = create<State>((set, get) => {
         scene: previous,
         past: past.slice(0, -1),
         future: [scene, ...future].slice(0, HISTORY_LIMIT),
-        selectedId: previous.nodes.some((n) => n.id === get().selectedId)
-          ? get().selectedId
-          : null,
+        selectedId: resolveSelectedLocal(previous),
       });
       void get().refreshWorld();
+      void get().refreshPendingUpdates();
     },
 
     redo() {
@@ -187,19 +253,41 @@ export const useStore = create<State>((set, get) => {
         scene: next,
         past: [...past, scene].slice(-HISTORY_LIMIT),
         future: future.slice(1),
-        selectedId: next.nodes.some((n) => n.id === get().selectedId)
-          ? get().selectedId
-          : null,
+        selectedId: resolveSelectedLocal(next),
       });
       void get().refreshWorld();
+      void get().refreshPendingUpdates();
     },
 
     select(id) {
-      set({ selectedId: id });
+      set((s) => ({
+        selectedId: id,
+        scene: {
+          ...s.scene,
+          assembly_defs: s.scene.assembly_defs,
+          assembly_instances: s.scene.assembly_instances,
+          selected_path: selectionPath(s.scene, id),
+        },
+        dirty: true,
+      }));
     },
 
     setAssemblyEditMode(mode) {
       set({ assemblyEditMode: mode });
+    },
+
+    async refreshPendingUpdates() {
+      try {
+        const { pending } = await api.assemblyUpdatePreview(get().scene);
+        set({ pendingUpdates: pending });
+      } catch {
+        // 后端不可用时静默
+      }
+    },
+
+    async applyAssemblyUpdates(choices) {
+      const result = await api.assemblyUpdateApply(get().scene, choices);
+      await commit(Promise.resolve(result));
     },
 
     async addNode(type) {

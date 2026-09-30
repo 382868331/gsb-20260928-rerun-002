@@ -20,6 +20,7 @@ const TYPE_ICON: Record<string, React.ReactNode> = {
   cylinder: <Cylinder size={15} />,
   cone: <Triangle size={15} />,
   plane: <Square size={15} />,
+  assembly: <Box size={15} />,
 };
 
 function isDescendant(scene: Scene, ancestorId: string, nodeId: string | null) {
@@ -122,6 +123,9 @@ export function HierarchyTree() {
             {node.name}
           </span>
           {node.assembly && <span className="badge assembly">装配件</span>}
+          {node.type === "assembly" && node.assembly?.nested_assembly_id && (
+            <span className="badge assembly nested">子装配件</span>
+          )}
           <span className="tree-actions">
             <button
               title="复制整个组（含子物体）"

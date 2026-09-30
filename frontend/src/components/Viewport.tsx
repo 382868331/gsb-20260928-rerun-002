@@ -19,7 +19,7 @@ function hashId(id: string): number {
 }
 
 function makeObject(node: SceneNode): THREE.Object3D {
-  if (node.type === "group") {
+  if (node.type === "group" || node.type === "assembly") {
     const group = new THREE.Group();
     group.add(new THREE.AxesHelper(0.9));
     return group;

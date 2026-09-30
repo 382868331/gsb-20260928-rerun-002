@@ -6,7 +6,8 @@ export type NodeType =
   | "sphere"
   | "cylinder"
   | "cone"
-  | "plane";
+  | "plane"
+  | "assembly";
 
 export interface Transform {
   position: Vec3;
@@ -22,6 +23,7 @@ export interface SceneNode {
   children: string[];
   transform: Transform;
   assembly?: AssemblyBinding | null;
+  nested_assembly_id?: string | null;
 }
 
 export interface Scene {
@@ -30,12 +32,15 @@ export interface Scene {
   root_ids: string[];
   assembly_defs: AssemblyDefinition[];
   assembly_instances: AssemblyInstance[];
+  selected_path?: string | null;
 }
 
 export interface AssemblyBinding {
   assembly_id: string;
   instance_id: string;
   template_id: string;
+  nested_assembly_id?: string | null;
+  child_instance_id?: string | null;
 }
 
 export interface AssemblyOverride extends Partial<Transform> {}
@@ -57,6 +62,34 @@ export interface AssemblyInstance {
   transform: Transform;
   node_map: Record<string, string>;
   overrides: Record<string, AssemblyOverride>;
+  parent_instance_id?: string | null;
+  host_template_id?: string | null;
+  part_policies?: Record<string, string>;
+  baseline_version: number;
+  baseline_nodes: SceneNode[];
+  baseline_root_ids: string[];
+  detached?: boolean;
+  detached_nodes?: SceneNode[];
+  detached_root_ids?: string[];
+}
+
+export interface AssemblyChange {
+  template_id: string;
+  name: string;
+  kind: "changed" | "added" | "removed";
+  has_local_override: boolean;
+  policy: "follow" | "keep";
+}
+
+export interface AssemblyPending {
+  instance_id: string;
+  name: string;
+  assembly_id: string;
+  assembly_name: string;
+  from_version: number;
+  to_version: number;
+  root_node_id?: string;
+  changes: AssemblyChange[];
 }
 
 export interface WorldInfo {

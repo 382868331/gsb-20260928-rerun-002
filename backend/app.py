@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from . import scene_ops
 from .models import (
     AddNodeRequest,
+    AssemblyUpdateApplyRequest,
     AssemblyTemplateReparentRequest,
     CreateAssemblyRequest,
     IdRequest,
@@ -46,6 +47,11 @@ class GroupRequest(BaseModel):
 
 class SaveRequest(BaseModel):
     scene: Scene
+
+
+class SelectionRequest(BaseModel):
+    scene: Scene
+    node_id: str | None = None
 
 
 class CreateRequest(BaseModel):
@@ -205,6 +211,26 @@ async def op_assembly_detach(req: IdRequest):
 @app.post("/api/ops/assembly/delete-definition")
 async def op_assembly_delete_definition(req: InstantiateAssemblyRequest):
     return _run(scene_ops.delete_assembly_definition, req.scene, req.assembly_id)
+
+
+@app.post("/api/ops/assembly/update-preview")
+async def op_assembly_update_preview(req: SaveRequest):
+    return scene_ops.assembly_update_preview(req.scene)
+
+
+@app.post("/api/ops/assembly/update-apply")
+async def op_assembly_update_apply(req: AssemblyUpdateApplyRequest):
+    return _run(scene_ops.apply_assembly_updates, req.scene, req.choices)
+
+
+@app.post("/api/ops/selection/set")
+async def op_selection_set(req: SelectionRequest):
+    return {"scene": scene_ops.set_selection(req.scene, req.node_id)}
+
+
+@app.post("/api/ops/selection/resolve")
+async def op_selection_resolve(req: SaveRequest):
+    return {"node_id": scene_ops.resolve_selection(req.scene)}
 
 
 @app.post("/api/ops/world-transforms")

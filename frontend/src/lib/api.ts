@@ -1,4 +1,4 @@
-import type { Scene, WorldInfo } from "./types";
+import type { AssemblyPending, Scene, WorldInfo } from "./types";
 
 const BASE = "/api";
 
@@ -119,6 +119,17 @@ export const api = {
       scene,
       assembly_id,
     }),
+  assemblyUpdatePreview: (scene: Scene) =>
+    request<{ pending: AssemblyPending[] }>("/ops/assembly/update-preview", { scene }),
+  assemblyUpdateApply: (
+    scene: Scene,
+    choices: Record<string, Record<string, "follow" | "keep">>
+  ) =>
+    request<{ scene: Scene }>("/ops/assembly/update-apply", { scene, choices }),
+  setSelection: (scene: Scene, node_id: string | null) =>
+    request<{ scene: Scene }>("/ops/selection/set", { scene, node_id }),
+  resolveSelection: (scene: Scene) =>
+    request<{ node_id: string | null }>("/ops/selection/resolve", { scene }),
 };
 
 type Vec3 = [number, number, number];

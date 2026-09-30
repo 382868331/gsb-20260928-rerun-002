@@ -184,7 +184,10 @@ def build_assembly_scene():
     first = scene.assembly_instances[0]
     scene = scene_ops.instantiate_assembly(scene, definition.id, position=[3, 0, 0])
     second = scene.assembly_instances[-1]
-    return scene, definition, first, second, part_id
+    part_template_id = next(
+        node.id for node in definition.nodes if node.name == "横臂"
+    )
+    return scene, definition, first, second, part_template_id
 
 
 def test_assembly_instances_update_from_source_and_keep_overrides():
@@ -201,11 +204,32 @@ def test_assembly_instances_update_from_source_and_keep_overrides():
     refreshed_first = next(item for item in scene.assembly_instances if item.id == first.id)
     refreshed_second = next(item for item in scene.assembly_instances if item.id == second.id)
     assert refreshed_first.assembly_version == 2
-    assert refreshed_second.assembly_version == 2
+    # 第二个实例尚未选择是否跟随：停留在 v1 基线，等待选择性更新
+    assert refreshed_second.assembly_version == 1
     idx = scene.index()
     assert idx[refreshed_first.node_map[part_template_id]].transform.position == pytest.approx([0, 2, 0])
-    assert idx[refreshed_second.node_map[part_template_id]].transform.position == pytest.approx([0, 2, 0])
+    assert idx[refreshed_second.node_map[part_template_id]].transform.position == pytest.approx([1, 0, 0])
     assert idx[refreshed_second.node_map[part_template_id]].transform.scale == pytest.approx([2, 3, 4])
+
+    # 预览应列出受影响实例与“有局部覆盖”的部件
+    preview = scene_ops.assembly_update_preview(scene)
+    assert len(preview["pending"]) == 1
+    entry = preview["pending"][0]
+    assert entry["instance_id"] == second.id
+    change = next(c for c in entry["changes"] if c["template_id"] == part_template_id)
+    assert change["kind"] == "changed"
+    assert change["has_local_override"] is True
+
+    # 第二个实例选择跟随：覆盖被清除，位置跟随到新版
+    scene = scene_ops.apply_assembly_updates(
+        scene, {second.id: {part_template_id: "follow"}}
+    )
+    refreshed_second = next(item for item in scene.assembly_instances if item.id == second.id)
+    assert refreshed_second.assembly_version == 2
+    assert part_template_id not in refreshed_second.overrides
+    applied_part = scene.index()[refreshed_second.node_map[part_template_id]]
+    assert applied_part.transform.position == pytest.approx([0, 2, 0])
+    assert applied_part.transform.scale == pytest.approx([1, 1, 1])
     assert refreshed_second.transform.position == pytest.approx([3, 0, 0])
 
 
@@ -227,8 +251,11 @@ def test_detached_assembly_is_not_rebound_after_source_edit_or_reload(tmp_path, 
     loaded = storage.load_scene("assembly")
     loaded_idx = loaded.index()
     assert loaded_idx[detached_part].assembly is None
-    assert len(loaded.assembly_instances) == 1
-    assert loaded.assembly_instances[0].id == second.id
+    linked = [item for item in loaded.assembly_instances if not item.detached]
+    assert len(linked) == 1
+    assert linked[0].id == second.id
+    detached_records = [item for item in loaded.assembly_instances if item.detached]
+    assert len(detached_records) == 1
 
 
 def test_delete_assembly_definition_detaches_instances():
@@ -236,7 +263,7 @@ def test_delete_assembly_definition_detaches_instances():
     generated = set(first.node_map.values()) | set(second.node_map.values())
     deleted = scene_ops.delete_assembly_definition(scene, definition.id)
     assert deleted.assembly_defs == []
-    assert deleted.assembly_instances == []
+    assert all(item.detached for item in deleted.assembly_instances)
     assert all(node.assembly is None for node in deleted.nodes if node.id in generated)
     assert {node.id for node in deleted.nodes} >= generated
 
@@ -250,19 +277,28 @@ def test_assembly_template_reparent_updates_linked_instances():
     scene = scene_ops.add_node(scene, "sphere", parent_id=root_id, name="立柱")
     pillar_id = scene.index()[root_id].children[1]
     scene = scene_ops.update_transform(scene, arm_id, position=[1, 0, 0])
-    before_matrices = {w["id"]: np.array(w["matrix"]) for w in scene_ops.world_summary(scene)}
     scene = scene_ops.create_assembly(scene, root_id, name="可换层组件")
+    definition = scene.assembly_defs[0]
+    arm_template = next(n.id for n in definition.nodes if n.name == "横臂")
+    pillar_template = next(n.id for n in definition.nodes if n.name == "立柱")
     scene = scene_ops.instantiate_assembly(scene, scene.assembly_defs[0].id, position=[4, 0, 0])
     instance = scene.assembly_instances[-1]
+    # 原件根相对世界为单位矩阵时，重父级后相对根的矩阵应保持
+    before_arm_matrix = np.eye(4)
+    before_arm_matrix[:3, 3] = [1, 0, 0]
     scene = scene_ops.reparent_assembly_template(
-        scene, instance.node_map[arm_id], instance.node_map[pillar_id], True
+        scene, instance.node_map[arm_template], instance.node_map[pillar_template], True
     )
-    refreshed = scene.assembly_instances[0]
-    moved = scene.index()[refreshed.node_map[arm_id]]
-    assert moved.parent_id == refreshed.node_map[pillar_id]
+    refreshed = next(item for item in scene.assembly_instances if item.id == instance.id)
+    moved = scene.index()[refreshed.node_map[arm_template]]
+    assert moved.parent_id == refreshed.node_map[pillar_template]
     after_matrices = {w["id"]: np.array(w["matrix"]) for w in scene_ops.world_summary(scene)}
+    root_world = after_matrices[refreshed.node_map["__root__"]].reshape(4, 4, order="F")
+    arm_world = after_matrices[refreshed.node_map[arm_template]].reshape(4, 4, order="F")
+    from backend.transforms import inverse, multiply
+    arm_relative = multiply(inverse(root_world), arm_world)
     assert np.allclose(
-        after_matrices[refreshed.node_map[arm_id]],
-        before_matrices[arm_id],
+        arm_relative,
+        before_arm_matrix,
         atol=1e-9,
     )

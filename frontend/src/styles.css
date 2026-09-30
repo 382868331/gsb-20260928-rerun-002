@@ -111,3 +111,20 @@ button.danger { color: #ffb3ba; }
 .modal p { margin: 6px 0; font-size: 13px; }
 .modal-hint { color: var(--muted); font-size: 12px !important; }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+.update-banner {
+  position: fixed; right: 16px; bottom: 16px; z-index: 40;
+  background: #2f5d38; color: #d8f5de; border: 1px solid #4c8c5c;
+  border-radius: 8px; padding: 10px 14px; font-size: 13px; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+.update-modal { width: 560px; max-height: 82vh; overflow: auto; }
+.update-instance { border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; }
+.update-instance-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel-2); }
+.update-instance-head button { margin-left: auto; height: 26px; font-size: 12px; }
+.update-part { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 7px 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.update-part-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-kind { color: var(--muted); font-size: 11px; }
+.update-kind.kind-removed { color: #f0a48a; }
+.update-kind.kind-changed { color: #e8d48b; }
+.tree-row .badge.assembly.nested { color: #c5a6ff; border-color: #514074; background: #231a3d; }
