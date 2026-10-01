@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../lib/store";
-import { PRIMITIVE_TYPES } from "../lib/types";
+import { PRIMITIVE_TYPES, type ReleaseDerivePreview, type ReleaseSnapshot } from "../lib/types";
 import { api, type SceneMeta } from "../lib/api";
 
 const LABELS: Record<string, string> = {
@@ -37,11 +37,20 @@ export function Toolbar() {
   const pendingUpdates = useStore((s) => s.pendingUpdates);
   const setPendingUpdates = useStore((s) => s.setPendingUpdates);
   const applyAssemblyUpdate = useStore((s) => s.applyAssemblyUpdate);
+  const releases = useStore((s) => s.scene.releases ?? []);
+  const assemblyHistory = useStore((s) => s.scene.assembly_history ?? []);
+  const publishRelease = useStore((s) => s.publishRelease);
+  const openRelease = useStore((s) => s.openRelease);
+  const deriveRelease = useStore((s) => s.deriveRelease);
+  const fetchDerivePreview = useStore((s) => s.fetchDerivePreview);
+  const hasInstances = useStore((s) => s.scene.assembly_instances.length > 0);
   const selectedNode = useStore((s) =>
     s.scene.nodes.find((n) => n.id === s.selectedId) ?? null
   );
   const [assemblyChoice, setAssemblyChoice] = useState("");
   const [previewing, setPreviewing] = useState(false);
+  const [releaseChoice, setReleaseChoice] = useState("");
+  const [deriving, setDeriving] = useState<ReleaseSnapshot | null>(null);
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -135,6 +144,48 @@ export function Toolbar() {
           重做
         </button>
       </div>
+      <div className="tool-group">
+        <button
+          disabled={!hasInstances}
+          title="把当前总成（含各层子装配版本与实例覆盖）锁定为可重开的发布版本"
+          onClick={() => {
+            const name = window.prompt("发布版本名称", "发布 " + (releases.length + 1));
+            if (name !== null) void publishRelease(name || undefined);
+          }}
+        >
+          发布为版本
+        </button>
+        <select
+          value={releaseChoice}
+          onChange={(e) => setReleaseChoice(e.target.value)}
+          disabled={releases.length === 0}
+          title="选择已锁定的发布版本"
+        >
+          <option value="">发布版本…</option>
+          {releases.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+        <button
+          disabled={!releaseChoice}
+          title="按发布时的状态重开总成；原件后来的更新不会混入（可撤销）"
+          onClick={() => void openRelease(releaseChoice)}
+        >
+          打开
+        </button>
+        <button
+          disabled={!releaseChoice}
+          title="从该发布版派生新方案：可只升级部分子装配，其余层级保留旧版"
+          onClick={() => {
+            const release = releases.find((item) => item.id === releaseChoice);
+            if (release) setDeriving(release);
+          }}
+        >
+          派生…
+        </button>
+      </div>
       <div className="spacer" />
       <select
         value={sceneId ?? ""}
@@ -165,6 +216,183 @@ export function Toolbar() {
           }
         />
       )}
+      {deriving && (
+        <DeriveDialog
+          release={deriving}
+          currentDefs={assemblies}
+          history={assemblyHistory}
+          onPreview={(upgrades) => fetchDerivePreview(deriving.id, upgrades)}
+          onApply={async (upgrades) => {
+            await deriveRelease(deriving.id, upgrades);
+            setDeriving(null);
+          }}
+          onClose={() => setDeriving(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeriveDialog({
+  release,
+  currentDefs,
+  history,
+  onPreview,
+  onApply,
+  onClose,
+}: {
+  release: ReleaseSnapshot;
+  currentDefs: { id: string; name: string; version: number }[];
+  history: { id: string; version: number }[];
+  onPreview: (upgrades: Record<string, number>) => Promise<ReleaseDerivePreview>;
+  onApply: (upgrades: Record<string, number>) => Promise<void>;
+  onClose: () => void;
+}) {
+  // 发布快照里出现的各装配件及其钉住版本
+  const pinned = new Map<string, { name: string; version: number }>();
+  const walk = (states: ReleaseSnapshot["instances"]) => {
+    for (const state of states) {
+      const def = release.definitions.find(
+        (d) => d.id === state.assembly_id && d.version === state.pinned_version
+      );
+      pinned.set(state.assembly_id, {
+        name: def?.name ?? state.name,
+        version: state.pinned_version,
+      });
+      walk(state.nested ?? []);
+    }
+  };
+  walk(release.instances);
+
+  const versionsOf = (assemblyId: string): number[] => {
+    const set = new Set<number>();
+    for (const def of currentDefs) if (def.id === assemblyId) set.add(def.version);
+    for (const def of history) if (def.id === assemblyId) set.add(def.version);
+    for (const def of release.definitions) if (def.id === assemblyId) set.add(def.version);
+    return [...set].sort((a, b) => a - b);
+  };
+
+  const [upgrades, setUpgrades] = useState<Record<string, number>>({});
+  const [preview, setPreview] = useState<ReleaseDerivePreview | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refreshPreview = async (next: Record<string, number>) => {
+    setBusy(true);
+    try {
+      setPreview(await onPreview(next));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocked = preview !== null && preview.missing.length > 0;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal update-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>从「{release.name}」派生新方案</h3>
+        <p className="modal-hint">
+          默认全部保留发布时的旧版；只为需要升级的子装配选择新版本。放弃不会改动场景。
+        </p>
+        {[...pinned.entries()].map(([assemblyId, info]) => (
+          <div key={assemblyId} className="update-instance-head">
+            <strong>
+              {info.name}（发布时 v{info.version}）
+            </strong>
+            <select
+              value={upgrades[assemblyId] ?? info.version}
+              onChange={(e) => {
+                const version = Number(e.target.value);
+                const next = { ...upgrades };
+                if (version === info.version) delete next[assemblyId];
+                else next[assemblyId] = version;
+                setUpgrades(next);
+                setPreview(null);
+              }}
+            >
+              {versionsOf(assemblyId).map((version) => (
+                <option key={version} value={version}>
+                  {version === info.version ? "保持 v" + version : "升级到 v" + version}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+        <div className="modal-actions">
+          <button disabled={busy} onClick={() => void refreshPreview(upgrades)}>
+            {busy ? "预览中…" : "预览差异"}
+          </button>
+          <button
+            className="primary"
+            disabled={blocked}
+            onClick={() => void onApply(upgrades)}
+          >
+            应用派生（可撤销）
+          </button>
+          <button onClick={onClose}>放弃升级</button>
+        </div>
+        {preview && (
+          <div className="update-group">
+            {preview.missing.length > 0 && (
+              <ul className="update-list">
+                {preview.missing.map((item) => (
+                  <li key={item.instance_id + item.assembly_id} className="warn">
+                    版本不可用：{item.instance_name} 需要 {item.assembly_name} v
+                    {item.version}（已保留现场，不会用最新版代替）
+                  </li>
+                ))}
+              </ul>
+            )}
+            {preview.kept.length > 0 && (
+              <div className="update-group-title">
+                保留旧版：
+                {preview.kept.map((k) => k.assembly_name + " v" + k.version).join("、")}
+              </div>
+            )}
+            {preview.items.map((item) => (
+              <div key={item.instance_id + item.assembly_id} className="update-instance">
+                <div className="update-instance-head">
+                  <strong>
+                    {item.instance_name}：{item.assembly_name} v{item.from_version} → v
+                    {item.to_version}
+                  </strong>
+                </div>
+                {item.changed.length > 0 && (
+                  <ul className="update-list">
+                    {item.changed.map((change) => (
+                      <li key={change.template_id}>
+                        上游升级：{change.path}
+                        {change.has_local_override ? (
+                          <em className="warn"> · 该实例有局部覆盖</em>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.removed.length > 0 && (
+                  <ul className="update-list">
+                    {item.removed.map((change) => (
+                      <li key={change.template_id} className="warn">
+                        部件删除：{change.path}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.added.length > 0 && (
+                  <ul className="update-list">
+                    {item.added.map((change) => (
+                      <li key={change.template_id}>新增部件：{change.path}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+            {preview.items.length === 0 && preview.missing.length === 0 && (
+              <p className="modal-hint">所有层级均保持发布时的版本，无差异。</p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

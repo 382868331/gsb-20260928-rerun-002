@@ -31,6 +31,7 @@ export interface Scene {
   assembly_defs: AssemblyDefinition[];
   assembly_instances: AssemblyInstance[];
   assembly_history?: AssemblyDefinition[];
+  releases?: ReleaseSnapshot[];
   selection?: SelectionRef | null;
 }
 
@@ -65,6 +66,56 @@ export interface AssemblyInstance {
   detached_slots?: Record<string, DetachedSlot>;
   parent_instance_id?: string | null;
   slot_key?: string | null;
+  derived_from?: string | null;
+  source_instance_id?: string | null;
+}
+
+export interface ReleaseInstanceState {
+  instance_id: string;
+  slot_key?: string | null;
+  parent_id?: string | null;
+  assembly_id: string;
+  pinned_version: number;
+  name: string;
+  transform: Transform;
+  overrides: Record<string, AssemblyOverride>;
+  detached_nodes?: Record<string, SceneNode[]>;
+  nested?: ReleaseInstanceState[];
+}
+
+export interface ReleaseSnapshot {
+  id: string;
+  name: string;
+  note?: string | null;
+  created_at: number;
+  definitions: AssemblyDefinition[];
+  instances: ReleaseInstanceState[];
+}
+
+export interface ReleasePreviewItem {
+  instance_id: string;
+  instance_name: string;
+  assembly_id: string;
+  assembly_name: string;
+  from_version: number;
+  to_version: number;
+  changed: AssemblyChangeItem[];
+  removed: AssemblyChangeItem[];
+  added: AssemblyChangeItem[];
+  slots_removed: SlotChangeItem[];
+  slots_added: SlotChangeItem[];
+}
+
+export interface ReleaseDerivePreview {
+  items: ReleasePreviewItem[];
+  kept: { assembly_id: string; assembly_name: string; version: number }[];
+  missing: {
+    instance_id: string;
+    instance_name: string;
+    assembly_id: string;
+    assembly_name: string;
+    version: number;
+  }[];
 }
 
 export interface SelectionRef {

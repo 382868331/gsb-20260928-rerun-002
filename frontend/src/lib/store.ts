@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { api } from "./api";
 import type {
   AssemblyUpdatePreview,
+  ReleaseDerivePreview,
   Scene,
   SceneNode,
   SelectionRef,
@@ -28,6 +29,7 @@ function withAssemblyCollections(scene: Scene): Scene {
     assembly_defs: scene.assembly_defs ?? [],
     assembly_instances: scene.assembly_instances ?? [],
     assembly_history: scene.assembly_history ?? [],
+    releases: scene.releases ?? [],
   };
 }
 
@@ -122,6 +124,13 @@ interface State {
   deleteAssemblyDefinition: () => Promise<void>;
   addNestedSlot: (childAssemblyId: string) => Promise<void>;
   fetchUpdatePreview: (assemblyId?: string | null) => Promise<AssemblyUpdatePreview[]>;
+  publishRelease: (name?: string) => Promise<void>;
+  openRelease: (releaseId: string) => Promise<void>;
+  deriveRelease: (releaseId: string, upgrades: Record<string, number>) => Promise<void>;
+  fetchDerivePreview: (
+    releaseId: string,
+    upgrades: Record<string, number>
+  ) => Promise<ReleaseDerivePreview>;
   applyAssemblyUpdate: (
     assemblyId: string,
     choices: {
@@ -451,6 +460,26 @@ export const useStore = create<State>((set, get) => {
       const { updates } = await api.assemblyUpdatePreview(scene, assemblyId);
       set({ pendingUpdates: updates });
       return updates;
+    },
+
+    async publishRelease(name) {
+      const { scene } = get();
+      await commit(api.publishRelease(scene, name));
+    },
+
+    async openRelease(releaseId) {
+      const { scene } = get();
+      await commit(api.openRelease(scene, releaseId));
+    },
+
+    async deriveRelease(releaseId, upgrades) {
+      const { scene } = get();
+      await commit(api.deriveRelease(scene, releaseId, upgrades));
+    },
+
+    async fetchDerivePreview(releaseId, upgrades) {
+      const { scene } = get();
+      return api.releaseDerivePreview(scene, releaseId, upgrades);
     },
 
     async applyAssemblyUpdate(assemblyId, choices) {

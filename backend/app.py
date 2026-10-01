@@ -20,8 +20,11 @@ from .models import (
     AssemblyUpdatePreviewRequest,
     AssemblyTemplateReparentRequest,
     CreateAssemblyRequest,
+    DeriveReleaseRequest,
     IdRequest,
     InstantiateAssemblyRequest,
+    PublishReleaseRequest,
+    ReleaseRequest,
     ReparentRequest,
     Scene,
     SelectionRequest,
@@ -185,6 +188,29 @@ async def op_assembly_update_apply(req: AssemblyUpdateApplyRequest):
 async def op_selection(req: SelectionRequest):
     node_id = scene_ops.resolve_selection(req.scene, req.selection)
     return {"node_id": node_id}
+
+
+@app.post("/api/ops/release/publish")
+async def op_release_publish(req: PublishReleaseRequest):
+    return _run(scene_ops.publish_release, req.scene, req.name, req.note)
+
+
+@app.post("/api/ops/release/open")
+async def op_release_open(req: ReleaseRequest):
+    return _run(scene_ops.open_release, req.scene, req.release_id)
+
+
+@app.post("/api/ops/release/derive")
+async def op_release_derive(req: DeriveReleaseRequest):
+    return _run(scene_ops.derive_release, req.scene, req.release_id, req.upgrades)
+
+
+@app.post("/api/ops/release/derive-preview")
+async def op_release_derive_preview(req: DeriveReleaseRequest):
+    try:
+        return scene_ops.release_derive_preview(req.scene, req.release_id, req.upgrades)
+    except scene_ops.SceneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/ops/assembly/transform")

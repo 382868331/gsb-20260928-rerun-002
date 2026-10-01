@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Dict, List, Optional
 
 import numpy as np
 
-from .models import AssemblyBinding, AssemblyDefinition, AssemblyInstance, AssemblyOverride, Node, Scene, Transform
+from .models import (
+    AssemblyBinding,
+    AssemblyDefinition,
+    AssemblyInstance,
+    AssemblyOverride,
+    Node,
+    ReleaseInstanceState,
+    ReleaseSnapshot,
+    Scene,
+    Transform,
+)
 from .transforms import compose, decompose, euler_xyz_from_quat, inverse, multiply, to_elements
 
 
@@ -1757,3 +1768,334 @@ def make_selection_ref(scene: Scene, node_id: str) -> Optional[SelectionRef]:
 def path_of_instance(scene: Scene, inst: AssemblyInstance) -> List[str]:
     found = _find_instance(scene, inst.id)
     return list(found[2]) if found else []
+
+
+# ---------------------------------------------------------------------------
+# 发布版本：把整个总成锁定为可重开的快照，支持派生（只升级部分子装配）
+# ---------------------------------------------------------------------------
+
+
+def _capture_release_state(scene: Scene, inst: AssemblyInstance) -> ReleaseInstanceState:
+    """冻结一棵（可嵌套）实例树：钉住版本、实例覆盖、脱离槽现场节点。"""
+    index = scene.index()
+    detached_nodes: Dict[str, List[Node]] = {}
+    for key, detached in inst.detached_slots.items():
+        ids = [nid for nid in _subtree_root_ids(scene, list(detached.node_ids)) if nid in index]
+        nodes: List[Node] = []
+        for nid in ids:
+            node = index[nid].model_copy(deep=True)
+            node.assembly = None
+            nodes.append(node)
+        if nodes:
+            detached_nodes[key] = nodes
+    return ReleaseInstanceState(
+        instance_id=inst.id,
+        slot_key=inst.slot_key,
+        parent_id=inst.parent_id,
+        assembly_id=inst.assembly_id,
+        pinned_version=inst.pinned_version,
+        name=inst.name,
+        transform=inst.transform.model_copy(deep=True),
+        overrides={k: v.model_copy(deep=True) for k, v in inst.overrides.items()},
+        detached_nodes=detached_nodes,
+        nested=[_capture_release_state(scene, child) for child in inst.nested_instances],
+    )
+
+
+def _release_required_versions(
+    states: List[ReleaseInstanceState], upgrades: Optional[Dict[str, int]] = None
+) -> Dict[tuple, List[str]]:
+    """{(assembly_id, version): [实例名, ...]}，版本已按 upgrades 替换。"""
+    upgrades = upgrades or {}
+    result: Dict[tuple, List[str]] = {}
+
+    def walk(state: ReleaseInstanceState) -> None:
+        key = (state.assembly_id, upgrades.get(state.assembly_id, state.pinned_version))
+        result.setdefault(key, []).append(state.name)
+        for child in state.nested:
+            walk(child)
+
+    for state in states:
+        walk(state)
+    return result
+
+
+def _assembly_name(scene: Scene, assembly_id: str) -> str:
+    versions = _history_index(scene).get(assembly_id)
+    if versions:
+        return versions[max(versions)].name
+    return assembly_id
+
+
+def publish_release(scene: Scene, name: Optional[str] = None, note: Optional[str] = None) -> Scene:
+    """把当前所有顶层装配件实例锁定为一个发布版本（单步操作，可撤销）。
+
+    冻结内容：各层子装配钉住的具体版本、实例覆盖、脱离槽现场；
+    同时把用到的原件版本整体拷入发布快照，原件之后的更新不会混入。
+    """
+    scene = scene.model_copy(deep=True)
+    if not scene.assembly_instances:
+        raise SceneError("场景中没有装配件实例，没有可发布的总成")
+    states = [_capture_release_state(scene, inst) for inst in scene.assembly_instances]
+    required = _release_required_versions(states)
+    definitions: List[AssemblyDefinition] = []
+    missing: List[str] = []
+    for (assembly_id, version), names in sorted(required.items()):
+        definition = _definition_at(scene, assembly_id, version)
+        if definition is None:
+            missing.append(f"实例 {'、'.join(names)} 需要 {_assembly_name(scene, assembly_id)} v{version}")
+        else:
+            definitions.append(definition.model_copy(deep=True))
+    if missing:
+        raise SceneError("以下装配件版本已不可用，无法发布：" + "；".join(missing))
+    existing = {r.id for r in scene.releases} | {n.id for n in scene.nodes}
+    release = ReleaseSnapshot(
+        id=_new_id(existing),
+        name=name or f"发布 {len(scene.releases) + 1}",
+        note=note,
+        created_at=time.time(),
+        definitions=definitions,
+        instances=states,
+    )
+    scene.releases.append(release)
+    return scene
+
+
+def _require_release(scene: Scene, release_id: str) -> ReleaseSnapshot:
+    release = next((r for r in scene.releases if r.id == release_id), None)
+    if release is None:
+        raise SceneError("发布版本不存在")
+    return release
+
+
+def _release_def_map(release: ReleaseSnapshot) -> Dict[tuple, AssemblyDefinition]:
+    return {(d.id, d.version): d for d in release.definitions}
+
+
+def _ensure_release_versions(scene: Scene, release: ReleaseSnapshot, upgrades: Dict[str, int]) -> None:
+    """校验发布所需的每个版本都可用；把快照内冻结的原件注入历史。
+
+    任何版本缺失都直接报错并列出受影响实例，绝不用最新版本代替。
+    """
+    required = _release_required_versions(release.instances, upgrades)
+    frozen = _release_def_map(release)
+    missing: List[str] = []
+    for (assembly_id, version), names in sorted(required.items()):
+        if (assembly_id, version) in frozen:
+            continue
+        if _definition_at(scene, assembly_id, version) is not None:
+            continue
+        missing.append(f"实例 {'、'.join(names)} 需要 {_assembly_name(scene, assembly_id)} v{version}")
+    if missing:
+        raise SceneError("装配件版本不可用，已保留现场、未用最新版本代替：" + "；".join(missing))
+    for key, definition in frozen.items():
+        if _definition_at(scene, key[0], key[1]) is None:
+            scene.assembly_history.append(definition.model_copy(deep=True))
+
+
+def _state_dict_for(child: ReleaseInstanceState, upgrades: Dict[str, int]) -> dict:
+    return {
+        "transform": child.transform.model_copy(deep=True),
+        "overrides": {k: v.model_copy(deep=True) for k, v in child.overrides.items()},
+        "pinned_version": upgrades.get(child.assembly_id, child.pinned_version),
+        "nested_state": {c.slot_key: _state_dict_for(c, upgrades) for c in child.nested},
+    }
+
+
+def _attach_release_detached(
+    scene: Scene,
+    inst: AssemblyInstance,
+    state: ReleaseInstanceState,
+    definition: AssemblyDefinition,
+    existing: set,
+) -> None:
+    """把发布时冻结的脱离槽子树作为普通节点挂回（重新生成 id，不重新关联原件）。"""
+    for slot_key, nodes in state.detached_nodes.items():
+        id_map: Dict[str, str] = {}
+        for node in nodes:
+            id_map[node.id] = _new_id(existing)
+        clones: List[Node] = []
+        for node in nodes:
+            clone = node.model_copy(deep=True)
+            clone.id = id_map[node.id]
+            clone.assembly = None
+            clone.children = [id_map[c] for c in node.children if c in id_map]
+            clone.parent_id = id_map[node.parent_id] if node.parent_id in id_map else None
+            clones.append(clone)
+        roots = [c for c in clones if c.parent_id is None]
+        slot = _slot_at(definition, slot_key)
+        host_id = inst.node_map.get(slot.parent_template_id) if slot else None
+        if not host_id or host_id not in scene.index():
+            host_id = inst.node_map.get(ROOT_KEY)
+        for root in roots:
+            root.parent_id = host_id
+        scene.nodes.extend(clones)
+        if host_id and host_id in scene.index():
+            scene.index()[host_id].children.extend(root.id for root in roots)
+        inst.detached_slots[slot_key] = DetachedSlot(node_ids=[root.id for root in roots])
+    for child_state in state.nested:
+        live = next((i for i in inst.nested_instances if i.slot_key == child_state.slot_key), None)
+        if live is None:
+            continue
+        child_def = _definition_at(scene, live.assembly_id, live.pinned_version)
+        if child_def is not None:
+            _attach_release_detached(scene, live, child_state, child_def, existing)
+
+
+def _spawn_from_state(
+    scene: Scene,
+    state: ReleaseInstanceState,
+    upgrades: Dict[str, int],
+    reuse_id: Optional[str],
+    parent_id: Optional[str],
+    derived_from: Optional[str] = None,
+    source_instance_id: Optional[str] = None,
+    offset_x: float = 0.0,
+) -> AssemblyInstance:
+    version = upgrades.get(state.assembly_id, state.pinned_version)
+    definition = _definition_at(scene, state.assembly_id, version)
+    if definition is None:
+        raise SceneError(f"装配件版本不可用：{state.assembly_id} v{version}")
+    existing = {n.id for n in scene.nodes}
+    for item, _, _ in _all_instances(scene):
+        existing.add(item.id)
+    instance_id = reuse_id if reuse_id and reuse_id not in existing else _new_id(existing)
+    existing.add(instance_id)
+    transform = state.transform.model_copy(deep=True)
+    if offset_x:
+        transform.position = [transform.position[0] + offset_x, transform.position[1], transform.position[2]]
+    instance = AssemblyInstance(
+        id=instance_id,
+        name=state.name,
+        assembly_id=state.assembly_id,
+        assembly_version=version,
+        pinned_version=version,
+        parent_id=parent_id,
+        transform=transform,
+        overrides={k: v.model_copy(deep=True) for k, v in state.overrides.items()},
+        derived_from=derived_from,
+        source_instance_id=source_instance_id,
+    )
+    scene.assembly_instances.append(instance)
+    nested_state = {child.slot_key: _state_dict_for(child, upgrades) for child in state.nested}
+    _materialize(scene, instance, definition, parent_id, existing, nested_state=nested_state)
+    _attach_release_detached(scene, instance, state, definition, existing)
+    return instance
+
+
+def open_release(scene: Scene, release_id: str) -> Scene:
+    """按发布时的状态重开总成：原件后来的更新不会混入。
+
+    只替换发布快照中记录过的实例（保持实例 id 不变，选中引用仍可追溯），
+    场景里的其他内容不动；任一锁定版本不可用则整体放弃并保留现场。
+    """
+    scene = scene.model_copy(deep=True)
+    release = _require_release(scene, release_id)
+    _ensure_release_versions(scene, release, {})
+    recorded = {state.instance_id for state in release.instances}
+    for top in list(scene.assembly_instances):
+        if top.id in recorded:
+            _remove_instance_nodes(scene, top)
+    scene.assembly_instances = [item for item in scene.assembly_instances if item.id not in recorded]
+    for state in release.instances:
+        parent_id = state.parent_id if state.parent_id in scene.index() else None
+        _spawn_from_state(scene, state, {}, reuse_id=state.instance_id, parent_id=parent_id)
+    return scene
+
+
+def derive_release(scene: Scene, release_id: str, upgrades: Optional[Dict[str, int]] = None) -> Scene:
+    """从旧发布版派生新方案：只升级指定子装配，其余层级保留发布时的旧版。
+
+    派生出的实例使用新 id 并与原总成同时存在（可同时查看不同版本），
+    通过 derived_from / source_instance_id 记录来源。
+    """
+    upgrades = upgrades or {}
+    scene = scene.model_copy(deep=True)
+    release = _require_release(scene, release_id)
+    _ensure_release_versions(scene, release, upgrades)
+    for state in release.instances:
+        derived = _spawn_from_state(
+            scene,
+            state,
+            upgrades,
+            reuse_id=None,
+            parent_id=None,
+            derived_from=release.id,
+            source_instance_id=state.instance_id,
+            offset_x=2.0,
+        )
+        derived.name = f"{state.name} 派生"
+        root_id = derived.node_map.get(ROOT_KEY)
+        if root_id and root_id in scene.index():
+            scene.index()[root_id].name = derived.name
+    return scene
+
+
+def _pseudo_instance(state: ReleaseInstanceState) -> AssemblyInstance:
+    return AssemblyInstance(
+        id=state.instance_id,
+        name=state.name,
+        assembly_id=state.assembly_id,
+        assembly_version=state.pinned_version,
+        pinned_version=state.pinned_version,
+        slot_key=state.slot_key,
+        transform=state.transform.model_copy(deep=True),
+        overrides={k: v.model_copy(deep=True) for k, v in state.overrides.items()},
+        nested_instances=[_pseudo_instance(child) for child in state.nested],
+        detached_slots={key: DetachedSlot(node_ids=[]) for key in state.detached_nodes},
+    )
+
+
+def release_derive_preview(scene: Scene, release_id: str, upgrades: Optional[Dict[str, int]] = None):
+    """预览派生：区分上游升级、实例覆盖与部件删除造成的影响。只读，不改现场。"""
+    upgrades = upgrades or {}
+    release = _require_release(scene, release_id)
+    frozen = _release_def_map(release)
+
+    def def_at(assembly_id: str, version: int) -> Optional[AssemblyDefinition]:
+        return frozen.get((assembly_id, version)) or _definition_at(scene, assembly_id, version)
+
+    items: List[dict] = []
+    missing: List[dict] = []
+    kept: Dict[str, dict] = {}
+
+    def walk(state: ReleaseInstanceState, label: str) -> None:
+        target = upgrades.get(state.assembly_id, state.pinned_version)
+        old_def = def_at(state.assembly_id, state.pinned_version)
+        new_def = def_at(state.assembly_id, target)
+        if old_def is None or new_def is None:
+            missing.append(
+                {
+                    "instance_id": state.instance_id,
+                    "instance_name": label,
+                    "assembly_id": state.assembly_id,
+                    "assembly_name": _assembly_name(scene, state.assembly_id),
+                    "version": target if new_def is None else state.pinned_version,
+                }
+            )
+            return
+        if target != state.pinned_version:
+            info = _instance_change_info(scene, _pseudo_instance(state), old_def, new_def)
+            items.append(
+                {
+                    "instance_id": state.instance_id,
+                    "instance_name": label,
+                    "assembly_id": state.assembly_id,
+                    "assembly_name": new_def.name,
+                    "from_version": state.pinned_version,
+                    "to_version": target,
+                    **info,
+                }
+            )
+        else:
+            kept[state.assembly_id] = {
+                "assembly_id": state.assembly_id,
+                "assembly_name": old_def.name,
+                "version": state.pinned_version,
+            }
+        for child in state.nested:
+            walk(child, f"{label} / {child.slot_key or child.instance_id}")
+
+    for state in release.instances:
+        walk(state, state.name)
+    return {"items": items, "kept": list(kept.values()), "missing": missing}

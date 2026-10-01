@@ -81,8 +81,35 @@ class AssemblyInstance(BaseModel):
     detached_slots: dict[str, DetachedSlot] = Field(default_factory=dict)
     parent_instance_id: Optional[str] = None
     slot_key: Optional[str] = None
+    # 派生来源：记录该实例由哪个发布版本 / 哪个实例派生而来，便于追溯
+    derived_from: Optional[str] = None
+    source_instance_id: Optional[str] = None
 
 
+class ReleaseInstanceState(BaseModel):
+    """发布时冻结的实例状态：钉住的版本、实例覆盖、脱离槽现场与嵌套层。"""
+
+    instance_id: str
+    slot_key: Optional[str] = None
+    parent_id: Optional[str] = None
+    assembly_id: str
+    pinned_version: int
+    name: str
+    transform: Transform = Field(default_factory=Transform)
+    overrides: dict[str, AssemblyOverride] = Field(default_factory=dict)
+    detached_nodes: dict[str, List[Node]] = Field(default_factory=dict)
+    nested: List["ReleaseInstanceState"] = Field(default_factory=list)
+
+
+class ReleaseSnapshot(BaseModel):
+    """可重开的发布版本：锁定各层子装配的具体版本与发布时的实例覆盖。"""
+
+    id: str
+    name: str
+    note: Optional[str] = None
+    created_at: float = 0.0
+    definitions: List[AssemblyDefinition] = Field(default_factory=list)
+    instances: List[ReleaseInstanceState] = Field(default_factory=list)
 class SelectionRef(BaseModel):
     """稳定的选中对象引用：刷新重生成节点 id 后仍能定位同一部件。"""
 
@@ -99,6 +126,7 @@ class Scene(BaseModel):
     assembly_defs: List[AssemblyDefinition] = Field(default_factory=list)
     assembly_instances: List[AssemblyInstance] = Field(default_factory=list)
     assembly_history: List[AssemblyDefinition] = Field(default_factory=list)
+    releases: List[ReleaseSnapshot] = Field(default_factory=list)
     selection: Optional[SelectionRef] = None
 
     def index(self) -> dict:
@@ -180,6 +208,24 @@ class SelectionRequest(BaseModel):
     selection: Optional[SelectionRef] = None
 
 
+class PublishReleaseRequest(BaseModel):
+    scene: Scene
+    name: Optional[str] = None
+    note: Optional[str] = None
+
+
+class ReleaseRequest(BaseModel):
+    scene: Scene
+    release_id: str
+
+
+class DeriveReleaseRequest(BaseModel):
+    scene: Scene
+    release_id: str
+    # {assembly_id: 目标版本}；未列出的装配件保持发布时钉住的旧版本
+    upgrades: dict[str, int] = Field(default_factory=dict)
+
+
 class SceneId(BaseModel):
     scene_id: str
 
@@ -193,3 +239,4 @@ def transform_from_euler(position=None, euler=None, scale=None) -> Transform:
 
 
 AssemblyInstance.model_rebuild()
+ReleaseInstanceState.model_rebuild()

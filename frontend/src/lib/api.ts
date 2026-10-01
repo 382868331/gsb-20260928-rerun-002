@@ -1,5 +1,6 @@
 import type {
   AssemblyUpdatePreview,
+  ReleaseDerivePreview,
   Scene,
   SelectionRef,
   WorldInfo,
@@ -158,6 +159,18 @@ export const api = {
     }),
   resolveSelection: (scene: Scene, selection: SelectionRef | null) =>
     request<{ node_id: string | null }>("/ops/selection", { scene, selection }),
+  publishRelease: (scene: Scene, name?: string, note?: string) =>
+    request<{ scene: Scene }>("/ops/release/publish", { scene, name, note }),
+  openRelease: (scene: Scene, release_id: string) =>
+    request<{ scene: Scene }>("/ops/release/open", { scene, release_id }),
+  deriveRelease: (scene: Scene, release_id: string, upgrades: Record<string, number>) =>
+    request<{ scene: Scene }>("/ops/release/derive", { scene, release_id, upgrades }),
+  releaseDerivePreview: (scene: Scene, release_id: string, upgrades: Record<string, number>) =>
+    request<ReleaseDerivePreview>("/ops/release/derive-preview", {
+      scene,
+      release_id,
+      upgrades,
+    }),
 };
 
 type Vec3 = [number, number, number];
