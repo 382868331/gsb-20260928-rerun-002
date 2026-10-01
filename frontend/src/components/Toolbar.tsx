@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useStore } from "../lib/store";
 import { PRIMITIVE_TYPES } from "../lib/types";
 import { api, type SceneMeta } from "../lib/api";
+import { ReleasePanel } from "./ReleasePanel";
 
 const LABELS: Record<string, string> = {
   cube: "立方体",
@@ -42,6 +43,7 @@ export function Toolbar() {
   );
   const [assemblyChoice, setAssemblyChoice] = useState("");
   const [previewing, setPreviewing] = useState(false);
+  const [showReleases, setShowReleases] = useState(false);
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -126,6 +128,12 @@ export function Toolbar() {
         >
           {previewing ? "检查中…" : "检查原件更新"}
         </button>
+        <button
+          title="把整个总成锁定为可重开的发布版本；派生、对比不同供应批次"
+          onClick={() => setShowReleases(true)}
+        >
+          发布版本…
+        </button>
       </div>
       <div className="tool-group">
         <button disabled={!canUndo} onClick={undo} title="Ctrl+Z">
@@ -165,6 +173,7 @@ export function Toolbar() {
           }
         />
       )}
+      {showReleases && <ReleasePanel onClose={() => setShowReleases(false)} />}
     </div>
   );
 }

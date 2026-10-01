@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { api } from "./api";
 import type {
   AssemblyUpdatePreview,
+  DerivePreviewItem,
   Scene,
   SceneNode,
   SelectionRef,
@@ -28,6 +29,7 @@ function withAssemblyCollections(scene: Scene): Scene {
     assembly_defs: scene.assembly_defs ?? [],
     assembly_instances: scene.assembly_instances ?? [],
     assembly_history: scene.assembly_history ?? [],
+    releases: scene.releases ?? [],
   };
 }
 
@@ -122,6 +124,15 @@ interface State {
   deleteAssemblyDefinition: () => Promise<void>;
   addNestedSlot: (childAssemblyId: string) => Promise<void>;
   fetchUpdatePreview: (assemblyId?: string | null) => Promise<AssemblyUpdatePreview[]>;
+  publishRelease: (name?: string) => Promise<void>;
+  openRelease: (releaseId: string) => Promise<void>;
+  deriveReleasePreview: (
+    releaseId: string,
+    upgrades: Record<string, number>
+  ) => Promise<DerivePreviewItem[]>;
+  deriveRelease: (releaseId: string, upgrades: Record<string, number>, name?: string) => Promise<void>;
+  deleteRelease: (releaseId: string) => Promise<void>;
+  deleteTemplatePart: () => Promise<void>;
   applyAssemblyUpdate: (
     assemblyId: string,
     choices: {
@@ -463,6 +474,55 @@ export const useStore = create<State>((set, get) => {
       });
       await commit(Promise.resolve(result));
       set({ pendingUpdates: get().pendingUpdates.filter((item) => item.assembly_id !== assemblyId) });
+    },
+
+    async publishRelease(name) {
+      const { scene, selectedId } = get();
+      const node = selectedId ? nodeIndex(scene).get(selectedId) : undefined;
+      if (!node?.assembly) {
+        set({ error: "请先选中一个顶层装配件实例，再发布为锁定版本。" });
+        return;
+      }
+      await commit(api.releasePublish(scene, node.assembly.instance_id, name));
+    },
+
+    async openRelease(releaseId) {
+      const { scene } = get();
+      const offset: [number, number, number] = [
+        (scene.assembly_instances?.length ?? 0) * 3,
+        0,
+        0,
+      ];
+      const before = new Set(scene.assembly_instances.map((item) => item.id));
+      const result = await api.releaseOpen(scene, releaseId, offset);
+      const next = withAssemblyCollections(result.scene);
+      const created = next.assembly_instances.find((item) => !before.has(item.id));
+      await commit(Promise.resolve({ scene: next }), created?.node_map.__root__);
+    },
+
+    async deriveReleasePreview(releaseId, upgrades) {
+      const { scene } = get();
+      const { preview } = await api.releaseDerivePreview(scene, releaseId, upgrades);
+      return preview;
+    },
+
+    async deriveRelease(releaseId, upgrades, name) {
+      const { scene } = get();
+      await commit(api.releaseDerive(scene, releaseId, upgrades, name));
+    },
+
+    async deleteRelease(releaseId) {
+      const { scene } = get();
+      await commit(api.releaseDelete(scene, releaseId));
+    },
+
+    async deleteTemplatePart() {
+      const { scene, selectedId } = get();
+      if (!selectedId) return;
+      const result = await api.assemblyTemplateDeletePart(scene, selectedId);
+      const next = withAssemblyCollections(result.scene);
+      set({ selectedId: null });
+      await commit(Promise.resolve({ scene: next }));
     },
 
     async refreshWorld() {

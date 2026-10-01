@@ -31,6 +31,7 @@ export interface Scene {
   assembly_defs: AssemblyDefinition[];
   assembly_instances: AssemblyInstance[];
   assembly_history?: AssemblyDefinition[];
+  releases?: AssemblyRelease[];
   selection?: SelectionRef | null;
 }
 
@@ -65,6 +66,40 @@ export interface AssemblyInstance {
   detached_slots?: Record<string, DetachedSlot>;
   parent_instance_id?: string | null;
   slot_key?: string | null;
+  source_release_id?: string | null;
+}
+
+export interface ReleasePin {
+  assembly_id: string;
+  version: number;
+}
+
+export interface AssemblyRelease {
+  id: string;
+  name: string;
+  seq: number;
+  source_release_id?: string | null;
+  root_assembly_id: string;
+  root_name: string;
+  pins: Record<string, ReleasePin>;
+  overrides: Record<string, Record<string, AssemblyOverride>>;
+  transform: Transform;
+  upgrades: Record<string, [number, number]>;
+}
+
+export interface DerivePreviewItem {
+  path: string;
+  label: string;
+  assembly_id: string;
+  assembly_name: string;
+  from_version: number;
+  to_version: number;
+  upstream_changed: AssemblyChangeItem[];
+  upstream_added: AssemblyChangeItem[];
+  parts_removed: AssemblyChangeItem[];
+  override_impacts: { template_id: string; path: string; part_removed: boolean }[];
+  slots_removed: SlotChangeItem[];
+  slots_added: SlotChangeItem[];
 }
 
 export interface SelectionRef {

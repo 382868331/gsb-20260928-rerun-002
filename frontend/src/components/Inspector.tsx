@@ -59,6 +59,7 @@ export function Inspector() {
   const setAssemblyEditMode = useStore((s) => s.setAssemblyEditMode);
   const assemblies = useStore((s) => s.scene.assembly_defs);
   const addNestedSlot = useStore((s) => s.addNestedSlot);
+  const deleteTemplatePart = useStore((s) => s.deleteTemplatePart);
   const world = useStore((s) => s.world);
   const [nestedChoice, setNestedChoice] = useState("");
 
@@ -80,6 +81,9 @@ export function Inspector() {
     : null;
   const instance = node?.assembly
     ? scene.assembly_instances.find((item) => item.id === node.assembly!.instance_id)
+    : null;
+  const sourceRelease = instance?.source_release_id
+    ? (scene.releases ?? []).find((r) => r.id === instance.source_release_id)
     : null;
   const isAssemblyRoot = Boolean(
     node?.assembly && definition && definition.root_ids.includes(node.assembly.template_id)
@@ -121,6 +125,12 @@ export function Inspector() {
             装配件：{definition.name}
             <code className="assembly-version">v{definition.version}</code>
           </div>
+          {sourceRelease && (
+            <div className="inspector-section">
+              来源发布版：{sourceRelease.name}
+              <code className="assembly-version">#{sourceRelease.seq}</code>
+            </div>
+          )}
           <div className="assembly-actions">
             {!isAssemblyRoot && (
               <select
@@ -138,6 +148,15 @@ export function Inspector() {
             </button>
             {hasOverride && (
               <button onClick={() => void clearOverride()}>清除覆盖</button>
+            )}
+            {activeMode === "template" && !isAssemblyRoot && (
+              <button
+                className="danger"
+                title="从原件中删除该部件（含子树）；只提升版本，实例由预览后决定更新"
+                onClick={() => void deleteTemplatePart()}
+              >
+                删除原件部件
+              </button>
             )}
           </div>
           <p className="modal-hint">

@@ -22,6 +22,10 @@ from .models import (
     CreateAssemblyRequest,
     IdRequest,
     InstantiateAssemblyRequest,
+    ReleaseDeleteRequest,
+    ReleaseDeriveRequest,
+    ReleaseOpenRequest,
+    ReleasePublishRequest,
     ReparentRequest,
     Scene,
     SelectionRequest,
@@ -239,6 +243,11 @@ async def op_assembly_template_reparent(req: AssemblyTemplateReparentRequest):
     )
 
 
+@app.post("/api/ops/assembly/template-delete-part")
+async def op_assembly_template_delete_part(req: IdRequest):
+    return _run(scene_ops.remove_assembly_template_part, req.scene, req.node_id)
+
+
 @app.post("/api/ops/assembly/detach")
 async def op_assembly_detach(req: IdRequest):
     return _run(scene_ops.detach_assembly_instance, req.scene, req.node_id)
@@ -247,6 +256,34 @@ async def op_assembly_detach(req: IdRequest):
 @app.post("/api/ops/assembly/delete-definition")
 async def op_assembly_delete_definition(req: InstantiateAssemblyRequest):
     return _run(scene_ops.delete_assembly_definition, req.scene, req.assembly_id)
+
+
+@app.post("/api/ops/release/publish")
+async def op_release_publish(req: ReleasePublishRequest):
+    return _run(scene_ops.publish_release, req.scene, req.instance_id, req.name)
+
+
+@app.post("/api/ops/release/open")
+async def op_release_open(req: ReleaseOpenRequest):
+    return _run(scene_ops.open_release, req.scene, req.release_id, req.position)
+
+
+@app.post("/api/ops/release/derive-preview")
+async def op_release_derive_preview(req: ReleaseDeriveRequest):
+    try:
+        return {"preview": scene_ops.derive_release_preview(req.scene, req.release_id, req.upgrades)}
+    except scene_ops.SceneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ops/release/derive")
+async def op_release_derive(req: ReleaseDeriveRequest):
+    return _run(scene_ops.derive_release, req.scene, req.release_id, req.upgrades, req.name)
+
+
+@app.post("/api/ops/release/delete")
+async def op_release_delete(req: ReleaseDeleteRequest):
+    return _run(scene_ops.delete_release, req.scene, req.release_id)
 
 
 @app.post("/api/ops/world-transforms")

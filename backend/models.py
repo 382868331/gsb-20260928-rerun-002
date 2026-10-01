@@ -81,6 +81,29 @@ class AssemblyInstance(BaseModel):
     detached_slots: dict[str, DetachedSlot] = Field(default_factory=dict)
     parent_instance_id: Optional[str] = None
     slot_key: Optional[str] = None
+    source_release_id: Optional[str] = None
+
+
+class ReleasePin(BaseModel):
+    """发布版本锁定的某一层子装配版本。键为槽路径（根为 ""）。"""
+
+    assembly_id: str
+    version: int
+
+
+class AssemblyRelease(BaseModel):
+    """锁定整个总成的可重开发布版本：各层子装配版本 + 当前实例覆盖。"""
+
+    id: str
+    name: str
+    seq: int = 1
+    source_release_id: Optional[str] = None
+    root_assembly_id: str
+    root_name: str = ""
+    pins: dict[str, ReleasePin] = Field(default_factory=dict)
+    overrides: dict[str, dict[str, AssemblyOverride]] = Field(default_factory=dict)
+    transform: Transform = Field(default_factory=Transform)
+    upgrades: dict[str, List[int]] = Field(default_factory=dict)
 
 
 class SelectionRef(BaseModel):
@@ -99,6 +122,7 @@ class Scene(BaseModel):
     assembly_defs: List[AssemblyDefinition] = Field(default_factory=list)
     assembly_instances: List[AssemblyInstance] = Field(default_factory=list)
     assembly_history: List[AssemblyDefinition] = Field(default_factory=list)
+    releases: List[AssemblyRelease] = Field(default_factory=list)
     selection: Optional[SelectionRef] = None
 
     def index(self) -> dict:
@@ -173,6 +197,31 @@ class AssemblyUpdateApplyRequest(BaseModel):
     # follow = 跟随原件丢弃覆盖；keep = 保留局部覆盖
     overrides: dict[str, Literal["follow", "keep"]] = Field(default_factory=dict)
     drop_removed: bool = False
+
+
+class ReleasePublishRequest(BaseModel):
+    scene: Scene
+    instance_id: str
+    name: Optional[str] = None
+
+
+class ReleaseOpenRequest(BaseModel):
+    scene: Scene
+    release_id: str
+    position: Optional[Vec3] = None
+
+
+class ReleaseDeriveRequest(BaseModel):
+    scene: Scene
+    release_id: str
+    # 槽路径 -> 目标版本；只升级列出的子装配，其余层级保留旧版
+    upgrades: dict[str, int] = Field(default_factory=dict)
+    name: Optional[str] = None
+
+
+class ReleaseDeleteRequest(BaseModel):
+    scene: Scene
+    release_id: str
 
 
 class SelectionRequest(BaseModel):

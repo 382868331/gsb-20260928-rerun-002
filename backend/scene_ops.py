@@ -7,7 +7,17 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .models import AssemblyBinding, AssemblyDefinition, AssemblyInstance, AssemblyOverride, Node, Scene, Transform
+from .models import (
+    AssemblyBinding,
+    AssemblyDefinition,
+    AssemblyInstance,
+    AssemblyOverride,
+    AssemblyRelease,
+    Node,
+    ReleasePin,
+    Scene,
+    Transform,
+)
 from .transforms import compose, decompose, euler_xyz_from_quat, inverse, multiply, to_elements
 
 
@@ -1062,6 +1072,35 @@ def reparent_assembly_template(scene, node_id, new_parent_node_id, keep_world_tr
     return scene
 
 
+def remove_assembly_template_part(scene: Scene, node_id: str) -> Scene:
+    """从原件中删除一个部件（含其子树）；只提升原件版本，实例由用户预览后决定更新。"""
+    scene = scene.model_copy(deep=True)
+    node = _require(scene.index(), node_id)
+    if not node.assembly:
+        raise SceneError("请在装配件实例节点上选择要删除的原件部件")
+    located = _locate_template(scene, node)
+    if not located:
+        raise SceneError("装配件原件不存在")
+    _, _, _, definition, template = located
+    template_id = node.assembly.template_id
+    if template_id in definition.root_ids:
+        raise SceneError("不能删除原件根节点；如需移除整个装配件请删除实例或原件")
+    live_def = next(d for d in scene.assembly_defs if d.id == definition.id)
+    template_scene = Scene(nodes=live_def.nodes, root_ids=live_def.root_ids)
+    removed = set(subtree_ids(template_scene.index(), template_id))
+    parent_id = template.parent_id
+    live_def.nodes = [n for n in live_def.nodes if n.id not in removed]
+    if parent_id:
+        parent = next((n for n in live_def.nodes if n.id == parent_id), None)
+        if parent:
+            parent.children = [c for c in parent.children if c not in removed]
+    for item in live_def.nodes:
+        item.children = [c for c in item.children if c not in removed]
+    live_def.slots = [slot for slot in live_def.slots if slot.parent_template_id not in removed]
+    _bump_definition(scene, live_def)
+    return scene
+
+
 def _template_paths(definition: AssemblyDefinition) -> Dict[str, str]:
     """模板 id -> 层级名路径，便于预览展示。"""
     index = {n.id: n for n in definition.nodes}
@@ -1699,8 +1738,11 @@ def delete_assembly_definition(scene: Scene, assembly_id: str) -> Scene:
         if other.id == assembly_id:
             continue
         if any(slot.assembly_id == assembly_id for slot in other.slots):
+            # 先快照含槽的旧版本，再移除槽并提升版本：
+            # 钉在旧版本上的实例/发布版重开时仍能看到当时的嵌套关系
+            _snapshot_definition(scene, other)
             other.slots = [slot for slot in other.slots if slot.assembly_id != assembly_id]
-            _bump_definition(scene, other)
+            other.version += 1
             bumped.append(other.id)
     scene.assembly_defs = [item for item in scene.assembly_defs if item.id != assembly_id]
     return scene
@@ -1757,3 +1799,316 @@ def make_selection_ref(scene: Scene, node_id: str) -> Optional[SelectionRef]:
 def path_of_instance(scene: Scene, inst: AssemblyInstance) -> List[str]:
     found = _find_instance(scene, inst.id)
     return list(found[2]) if found else []
+
+
+# ---------------------------------------------------------------------------
+# 发布版本：锁定整个总成（各层子装配版本 + 当前实例覆盖），可重开、派生、对比
+# ---------------------------------------------------------------------------
+
+
+def _release_index(scene: Scene) -> Dict[str, AssemblyRelease]:
+    return {item.id: item for item in scene.releases}
+
+
+def _release_path_label(release: AssemblyRelease, path: str) -> str:
+    if not path:
+        return release.root_name or "总成根"
+    return f"{release.root_name or '总成'} / " + " / ".join(path.split("/"))
+
+
+def publish_release(scene: Scene, instance_id: str, name: Optional[str] = None) -> Scene:
+    """把顶层实例的当前状态锁定为发布版本（只追加记录，不改现场）。"""
+    scene = scene.model_copy(deep=True)
+    found = _find_instance(scene, instance_id)
+    if not found:
+        raise SceneError("装配件实例不存在")
+    inst, _, _ = found
+    if inst.parent_instance_id is not None:
+        raise SceneError("请选择顶层装配件实例发布；嵌套实例随外层总成一起锁定")
+
+    pins: Dict[str, ReleasePin] = {}
+    overrides: Dict[str, Dict[str, AssemblyOverride]] = {}
+
+    def walk(item: AssemblyInstance, path: str) -> None:
+        pins[path] = ReleasePin(assembly_id=item.assembly_id, version=item.pinned_version)
+        if item.overrides:
+            overrides[path] = {k: v.model_copy(deep=True) for k, v in item.overrides.items()}
+        for child in item.nested_instances:
+            child_key = child.slot_key or child.id
+            walk(child, f"{path}/{child_key}" if path else child_key)
+
+    walk(inst, "")
+    seq = max([item.seq for item in scene.releases], default=0) + 1
+    existing = {item.id for item in scene.releases} | {n.id for n in scene.nodes}
+    release = AssemblyRelease(
+        id=_new_id(existing),
+        name=name or f"{inst.name} 发布 {seq}",
+        seq=seq,
+        root_assembly_id=inst.assembly_id,
+        root_name=inst.name,
+        pins=pins,
+        overrides=overrides,
+        transform=inst.transform.model_copy(deep=True),
+    )
+    scene.releases.append(release)
+    return scene
+
+
+def _pin_definition(scene: Scene, pin: ReleasePin) -> Optional[AssemblyDefinition]:
+    """发布钉版可用性：原件必须仍然存在，且该版本快照仍可解析。"""
+    if pin.assembly_id not in _assembly_index(scene):
+        return None
+    return _definition_at(scene, pin.assembly_id, pin.version)
+
+
+def _release_missing(scene: Scene, release: AssemblyRelease) -> List[dict]:
+    missing = []
+    reachable = set()
+    stack = [""]
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        pin = release.pins.get(current)
+        if pin is None:
+            continue
+        definition = _definition_at(scene, pin.assembly_id, pin.version)
+        if definition is None:
+            continue
+        for slot in definition.slots:
+            stack.append(f"{current}/{slot.key}" if current else slot.key)
+    for path, pin in release.pins.items():
+        if path not in reachable:
+            continue
+        if _pin_definition(scene, pin) is None:
+            name = release.root_name if not path else pin.assembly_id
+            definition = _assembly_index(scene).get(pin.assembly_id)
+            if definition:
+                name = definition.name
+            else:
+                hist = scene.assembly_history
+                entry = next((h for h in hist if h.id == pin.assembly_id), None)
+                if entry:
+                    name = entry.name
+            missing.append(
+                {
+                    "path": path,
+                    "label": _release_path_label(release, path),
+                    "assembly_id": pin.assembly_id,
+                    "assembly_name": name,
+                    "version": pin.version,
+                }
+            )
+    return missing
+
+
+def _release_slot_state(scene: Scene, release: AssemblyRelease, path: str) -> Optional[dict]:
+    pin = release.pins.get(path)
+    if pin is None:
+        return None
+    child_def = _pin_definition(scene, pin)
+    if child_def is None:
+        return None
+    nested_state: Dict[str, dict] = {}
+    for slot in child_def.slots:
+        sub = _release_slot_state(scene, release, f"{path}/{slot.key}")
+        if sub is not None:
+            nested_state[slot.key] = sub
+    return {
+        "pinned_version": pin.version,
+        "overrides": {
+            k: v.model_copy(deep=True) for k, v in release.overrides.get(path, {}).items()
+        },
+        "nested_state": nested_state,
+    }
+
+
+def open_release(scene: Scene, release_id: str, position=None) -> Scene:
+    """按发布时锁定的各层版本与覆盖重新生成一个实例；旧版本不可用则报错并保留现场。"""
+    scene = scene.model_copy(deep=True)
+    release = _release_index(scene).get(release_id)
+    if not release:
+        raise SceneError("发布版本不存在")
+    missing = _release_missing(scene, release)
+    if missing:
+        detail = "；".join(
+            f"{item['label']}（{item['assembly_name']} v{item['version']}）" for item in missing
+        )
+        raise SceneError(f"发布版本引用的旧版本已不可用，现场保持不变：{detail}")
+    root_pin = release.pins.get("")
+    if root_pin is None:
+        raise SceneError("发布版本缺少总成根记录")
+    root_def = _pin_definition(scene, root_pin)
+    existing = {n.id for n in scene.nodes}
+    for inst, _, _ in _all_instances(scene):
+        existing.add(inst.id)
+    instance = AssemblyInstance(
+        id=_new_id(existing),
+        name=release.name,
+        assembly_id=root_def.id,
+        assembly_version=root_def.version,
+        pinned_version=root_def.version,
+        parent_id=None,
+        transform=release.transform.model_copy(deep=True),
+        overrides={k: v.model_copy(deep=True) for k, v in release.overrides.get("", {}).items()},
+        source_release_id=release.id,
+    )
+    if position is not None:
+        instance.transform.position = [float(v) for v in position]
+    scene.assembly_instances.append(instance)
+    nested_state: Dict[str, dict] = {}
+    for slot in root_def.slots:
+        state = _release_slot_state(scene, release, slot.key)
+        if state is not None:
+            nested_state[slot.key] = state
+    _materialize(scene, instance, root_def, None, existing, nested_state=nested_state)
+    return scene
+
+
+def _definition_diff(old_def: AssemblyDefinition, new_def: AssemblyDefinition) -> dict:
+    """两个原件版本之间的差异（不含实例信息），用于派生预览。"""
+    old_index = {n.id: n for n in old_def.nodes}
+    new_index = {n.id: n for n in new_def.nodes}
+    new_paths = _template_paths(new_def)
+    old_paths = _template_paths(old_def)
+    changed, removed, added = [], [], []
+    for tid, node in old_index.items():
+        if tid in new_index:
+            other = new_index[tid]
+            if not _transform_equal(node.transform, other.transform) or node.parent_id != other.parent_id:
+                changed.append(
+                    {"template_id": tid, "name": other.name, "path": new_paths.get(tid, other.name)}
+                )
+        else:
+            removed.append(
+                {"template_id": tid, "name": node.name, "path": old_paths.get(tid, node.name)}
+            )
+    for tid, node in new_index.items():
+        if tid not in old_index:
+            added.append({"template_id": tid, "name": node.name, "path": new_paths.get(tid, node.name)})
+    old_slots = {s.key: s for s in old_def.slots}
+    new_slots = {s.key: s for s in new_def.slots}
+    slots_removed = [
+        {"slot_key": key, "assembly_id": slot.assembly_id}
+        for key, slot in old_slots.items()
+        if key not in new_slots
+    ]
+    slots_added = [
+        {"slot_key": key, "assembly_id": slot.assembly_id}
+        for key, slot in new_slots.items()
+        if key not in old_slots
+    ]
+    return {
+        "changed": changed,
+        "removed": removed,
+        "added": added,
+        "slots_removed": slots_removed,
+        "slots_added": slots_added,
+    }
+
+
+def derive_release_preview(scene: Scene, release_id: str, upgrades: Dict[str, int]) -> List[dict]:
+    """派生预览：区分上游升级、实例覆盖与部件删除分别造成的变化。只读。"""
+    release = _release_index(scene).get(release_id)
+    if not release:
+        raise SceneError("发布版本不存在")
+    results = []
+    for path, target_version in upgrades.items():
+        pin = release.pins.get(path)
+        if pin is None:
+            raise SceneError(f"发布版本中没有该层子装配：{path or '总成根'}")
+        old_def = _definition_at(scene, pin.assembly_id, pin.version)
+        new_def = _definition_at(scene, pin.assembly_id, target_version)
+        if old_def is None or new_def is None:
+            raise SceneError(
+                f"无法预览：{pin.assembly_id} 的版本 {pin.version} 或 {target_version} 不可用"
+            )
+        if target_version == pin.version:
+            continue
+        diff = _definition_diff(old_def, new_def)
+        changed_ids = {item["template_id"] for item in diff["changed"]}
+        removed_ids = {item["template_id"] for item in diff["removed"]}
+        paths = _template_paths(old_def)
+        override_impacts = []
+        for tid in release.overrides.get(path, {}):
+            if tid in changed_ids or tid in removed_ids:
+                override_impacts.append(
+                    {
+                        "template_id": tid,
+                        "path": paths.get(tid, tid),
+                        "part_removed": tid in removed_ids,
+                    }
+                )
+        results.append(
+            {
+                "path": path,
+                "label": _release_path_label(release, path),
+                "assembly_id": pin.assembly_id,
+                "assembly_name": new_def.name,
+                "from_version": pin.version,
+                "to_version": target_version,
+                "upstream_changed": diff["changed"],
+                "upstream_added": diff["added"],
+                "parts_removed": diff["removed"],
+                "override_impacts": override_impacts,
+                "slots_removed": diff["slots_removed"],
+                "slots_added": diff["slots_added"],
+            }
+        )
+    return results
+
+
+def derive_release(
+    scene: Scene,
+    release_id: str,
+    upgrades: Dict[str, int],
+    name: Optional[str] = None,
+) -> Scene:
+    """从旧发布版派生新方案：只升级列出的子装配，其余层级保留旧版。"""
+    scene = scene.model_copy(deep=True)
+    base = _release_index(scene).get(release_id)
+    if not base:
+        raise SceneError("发布版本不存在")
+    new_pins = {path: pin.model_copy(deep=True) for path, pin in base.pins.items()}
+    applied: Dict[str, List[int]] = {}
+    for path, target_version in upgrades.items():
+        pin = new_pins.get(path)
+        if pin is None:
+            raise SceneError(f"发布版本中没有该层子装配：{path or '总成根'}")
+        if target_version == pin.version:
+            continue
+        candidate = ReleasePin(assembly_id=pin.assembly_id, version=int(target_version))
+        if _pin_definition(scene, candidate) is None:
+            raise SceneError(
+                f"目标版本不可用：{_release_path_label(base, path)} v{target_version}，已放弃派生"
+            )
+        applied[path] = [pin.version, int(target_version)]
+        pin.version = int(target_version)
+    seq = max([item.seq for item in scene.releases], default=0) + 1
+    existing = {item.id for item in scene.releases} | {n.id for n in scene.nodes}
+    release = AssemblyRelease(
+        id=_new_id(existing),
+        name=name or f"{base.name} 派生 {seq}",
+        seq=seq,
+        source_release_id=base.id,
+        root_assembly_id=base.root_assembly_id,
+        root_name=base.root_name,
+        pins=new_pins,
+        overrides={
+            path: {k: v.model_copy(deep=True) for k, v in items.items()}
+            for path, items in base.overrides.items()
+        },
+        transform=base.transform.model_copy(deep=True),
+        upgrades=applied,
+    )
+    scene.releases.append(release)
+    return scene
+
+
+def delete_release(scene: Scene, release_id: str) -> Scene:
+    scene = scene.model_copy(deep=True)
+    if release_id not in _release_index(scene):
+        raise SceneError("发布版本不存在")
+    scene.releases = [item for item in scene.releases if item.id != release_id]
+    return scene

@@ -123,3 +123,6 @@ button.danger { color: #ffb3ba; }
 .nested-slot { display: flex; gap: 6px; padding: 0 12px 8px; }
 .nested-slot select { flex: 1; height: 28px; font-size: 12px; }
 .nested-slot button { height: 28px; font-size: 12px; }
+.release-publish { display: flex; gap: 8px; margin: 8px 0; }
+.release-publish input { flex: 1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 6px 8px; }
+.update-dialog input { background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 6px 8px; margin: 6px 0; width: 100%; box-sizing: border-box; }

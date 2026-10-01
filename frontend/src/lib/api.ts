@@ -1,5 +1,6 @@
 import type {
   AssemblyUpdatePreview,
+  DerivePreviewItem,
   Scene,
   SelectionRef,
   WorldInfo,
@@ -117,6 +118,22 @@ export const api = {
       new_parent_node_id,
       keep_world_transform,
     }),
+  assemblyTemplateDeletePart: (scene: Scene, node_id: string) =>
+    request<{ scene: Scene }>("/ops/assembly/template-delete-part", { scene, node_id }),
+  releasePublish: (scene: Scene, instance_id: string, name?: string) =>
+    request<{ scene: Scene }>("/ops/release/publish", { scene, instance_id, name }),
+  releaseOpen: (scene: Scene, release_id: string, position?: Vec3) =>
+    request<{ scene: Scene }>("/ops/release/open", { scene, release_id, position }),
+  releaseDerivePreview: (scene: Scene, release_id: string, upgrades: Record<string, number>) =>
+    request<{ preview: DerivePreviewItem[] }>("/ops/release/derive-preview", {
+      scene,
+      release_id,
+      upgrades,
+    }),
+  releaseDerive: (scene: Scene, release_id: string, upgrades: Record<string, number>, name?: string) =>
+    request<{ scene: Scene }>("/ops/release/derive", { scene, release_id, upgrades, name }),
+  releaseDelete: (scene: Scene, release_id: string) =>
+    request<{ scene: Scene }>("/ops/release/delete", { scene, release_id }),
   detachAssembly: (scene: Scene, node_id: string) =>
     request<{ scene: Scene }>("/ops/assembly/detach", { scene, node_id }),
   deleteAssemblyDefinition: (scene: Scene, assembly_id: string) =>
