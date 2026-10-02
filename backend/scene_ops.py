@@ -256,13 +256,19 @@ def _all_instances(scene: Scene):
 
     def walk(items, top, path):
         for item in items:
-            found.append((item, top, list(path)))
+            item_path = path + [item.slot_key or item.id]
+            found.append((item, top, item_path))
             if item.nested_instances:
-                walk(item.nested_instances, top, path + [item.slot_key or item.id])
+                for child in item.nested_instances:
+                    walk(
+                        [child],
+                        top,
+                        item_path,
+                    )
 
     for item in scene.assembly_instances:
         found.append((item, item, []))
-        walk(item.nested_instances, item, [item.slot_key or item.id])
+        walk(item.nested_instances, item, [])
     return found
 
 
@@ -2099,3 +2105,367 @@ def release_derive_preview(scene: Scene, release_id: str, upgrades: Optional[Dic
     for state in release.instances:
         walk(state, state.name)
     return {"items": items, "kept": list(kept.values()), "missing": missing}
+
+
+# ---------------------------------------------------------------------------
+# 分批采用子装配升级（同一发布总成的多个实例分属不同使用批次）
+# ---------------------------------------------------------------------------
+
+from .models import BatchDecision, BatchRollback, UpgradeBatch  # noqa: E402
+
+
+def _find_nested(top: AssemblyInstance, path: List[str]):
+    current = top
+    for key in path:
+        nxt = next(
+            (i for i in current.nested_instances if i.slot_key == key or i.id == key),
+            None,
+        )
+        if nxt is None:
+            return None
+        current = nxt
+    return current
+
+
+def _snapshot_instance_version(inst: AssemblyInstance) -> dict:
+    """与节点 id 无关的版本现场快照：版本、覆盖、脱离槽、嵌套层。"""
+    return {
+        "pinned_version": inst.pinned_version,
+        "overrides": {k: v.model_copy(deep=True) for k, v in inst.overrides.items()},
+        "detached": sorted(k for k in inst.detached_slots if k),
+        "children": {
+            child.slot_key: _snapshot_instance_version(child)
+            for child in inst.nested_instances
+            if child.slot_key
+        },
+    }
+
+
+def _nested_state_from_live(
+    scene: Scene,
+    inst: AssemblyInstance,
+    definition: AssemblyDefinition,
+    snapshot: Optional[dict],
+) -> Optional[dict]:
+    """按 definition 重建时，从当前活实例 + 版本快照构造 nested_state。
+
+    快照只提供版本/覆盖/脱离信息，不保存节点 id；保留节点一律从当前现场解析。
+    definition 中已消失的模板部件与快照记录的脱离槽作为普通节点保留。
+    任一钉住版本缺失则返回 None（调用方保留实例并记录原因）。
+    """
+    snap = snapshot or {}
+    overrides = {
+        k: v.model_copy(deep=True)
+        for k, v in (snap.get("overrides") or inst.overrides).items()
+    }
+    preserved: Dict[str, List[str]] = {}
+    valid_templates = {n.id for n in definition.nodes}
+    for tid, nid in inst.node_map.items():
+        if tid != ROOT_KEY and tid not in valid_templates:
+            preserved[tid] = _subtree_root_ids(scene, [nid])
+    for slot_key in snap.get("detached", []):
+        detached = inst.detached_slots.get(slot_key)
+        if detached:
+            preserved[slot_key] = list(detached.node_ids)
+        else:
+            nested = next((i for i in inst.nested_instances if i.slot_key == slot_key), None)
+            root = nested.node_map.get(ROOT_KEY) if nested else None
+            if root:
+                preserved[slot_key] = _subtree_root_ids(scene, [root])
+    children: Dict[str, dict] = {}
+    for slot in definition.slots:
+        child_live = next((i for i in inst.nested_instances if i.slot_key == slot.key), None)
+        if child_live is None:
+            continue
+        child_snap = (snap.get("children") or {}).get(slot.key)
+        child_version = child_snap["pinned_version"] if child_snap else child_live.pinned_version
+        child_def = _definition_at(scene, slot.assembly_id, child_version)
+        if child_def is None:
+            return None
+        child_state = _nested_state_from_live(scene, child_live, child_def, child_snap)
+        if child_state is None:
+            return None
+        children[slot.key] = child_state
+    return {
+        "transform": inst.transform.model_copy(deep=True),
+        "overrides": overrides,
+        "pinned_version": definition.version,
+        "preserved": preserved,
+        "nested_state": children,
+    }
+
+
+def _rematerialize_top_with_target(
+    scene: Scene,
+    top: AssemblyInstance,
+    target_path: List[str],
+    target_version: int,
+    snapshot: Optional[dict],
+) -> Optional[str]:
+    """重建顶层实例，仅 target_path 指向的实例切换版本；成功返回 None，否则返回原因。"""
+    top_def = _definition_at(scene, top.assembly_id, top.pinned_version)
+    if top_def is None:
+        return (
+            f"{top.name} 需要 {_assembly_name(scene, top.assembly_id)} v{top.pinned_version}"
+            "，原版本不可用；已保留现场"
+        )
+
+    def build(inst: AssemblyInstance, remaining: List[str], snap: Optional[dict]):
+        if not remaining:
+            definition = _definition_at(scene, inst.assembly_id, target_version)
+            if definition is None:
+                return None, (
+                    f"{inst.name} 需要 {_assembly_name(scene, inst.assembly_id)} v{target_version}"
+                    "，该版本不可用；已保留原版本与覆盖"
+                )
+            state = _nested_state_from_live(scene, inst, definition, snap)
+            if state is None:
+                return None, f"{inst.name} 内部依赖的旧版本已不可用；已保留该实例现场"
+            return state, None
+        key = remaining[0]
+        child = next((i for i in inst.nested_instances if i.slot_key == key or i.id == key), None)
+        if child is None:
+            return None, "批次中的嵌套实例已不存在"
+        child_snap = None
+        if snap is not None:
+            child_snap = (snap.get("children") or {}).get(key)
+        child_state, error = build(child, remaining[1:], child_snap)
+        if error:
+            return None, error
+        cur_def = _definition_at(scene, inst.assembly_id, inst.pinned_version)
+        if cur_def is None:
+            return None, f"{inst.name} 的原版本 v{inst.pinned_version} 不可用"
+        state = _nested_state_from_live(scene, inst, cur_def, None)
+        if state is None:
+            return None, f"{inst.name} 内部依赖的旧版本已不可用"
+        state["nested_state"][key] = child_state
+        return state, None
+
+    nested_state, error = build(top, list(target_path), snapshot)
+    if error:
+        return error
+    existing = set(scene.index())
+    for inst, _, _ in _all_instances(scene):
+        existing.add(inst.id)
+    _materialize(
+        scene,
+        top,
+        top_def,
+        top.parent_id,
+        existing,
+        preserved=nested_state.get("preserved"),
+        nested_state=nested_state.get("nested_state"),
+    )
+    return None
+
+
+def _batch_occurrences(scene: Scene, assembly_id: str):
+    return [
+        (top, path, inst)
+        for inst, top, path in _all_instances(scene)
+        if inst.assembly_id == assembly_id
+    ]
+
+
+def _require_batch(scene: Scene, batch_id: str) -> UpgradeBatch:
+    batch = next((b for b in scene.upgrade_batches if b.id == batch_id), None)
+    if batch is None:
+        raise SceneError("升级批次不存在")
+    return batch
+
+
+def _selection_impact(
+    scene: Scene,
+    top: AssemblyInstance,
+    path: List[str],
+    old_def: AssemblyDefinition,
+    new_def: AssemblyDefinition,
+) -> dict:
+    """升级对稳定选择引用的影响：被删部件/槽上的引用将失去解析目标。"""
+    lost_refs: List[str] = []
+    old_templates = {n.id for n in old_def.nodes}
+    new_templates = {n.id for n in new_def.nodes}
+    old_paths = _template_paths(old_def)
+    for tid in sorted(old_templates - new_templates):
+        ref = SelectionRef(top_instance_id=top.id, path=list(path), template_id=tid)
+        if resolve_selection(scene, ref) is not None:
+            lost_refs.append(old_paths.get(tid, tid))
+    old_slots = {s.key for s in old_def.slots}
+    new_slots = {s.key for s in new_def.slots}
+    for key in sorted(old_slots - new_slots):
+        ref = SelectionRef(top_instance_id=top.id, path=list(path) + [key], template_id=ROOT_KEY)
+        if resolve_selection(scene, ref) is not None:
+            lost_refs.append(f"嵌套槽 {key}")
+    return {"lost_refs": lost_refs, "top_instance_id": top.id, "path": list(path)}
+
+
+def batch_upgrade_preview(scene: Scene, assembly_id: str, candidate_version: int):
+    """只读预览：逐实例列出覆盖值、被删/新增部件与选择引用影响。"""
+    new_def = _definition_at(scene, assembly_id, candidate_version)
+    if new_def is None:
+        raise SceneError(
+            f"{_assembly_name(scene, assembly_id)} v{candidate_version} 候选版本不可用，无法预览"
+        )
+    candidate_template_ids = {n.id for n in new_def.nodes}
+    items = []
+    missing: List[dict] = []
+    for top, path, inst in _batch_occurrences(scene, assembly_id):
+        old_def = _definition_at(scene, assembly_id, inst.pinned_version)
+        label = top.name + (" / " + " / ".join(path) if path else "")
+        if old_def is None:
+            missing.append({
+                "top_instance_id": top.id,
+                "path": list(path),
+                "instance_id": inst.id,
+                "instance_name": label,
+                "assembly_id": assembly_id,
+                "assembly_name": _assembly_name(scene, assembly_id),
+                "version": inst.pinned_version,
+                "reason": "原版本缺失，无法计算差异；批次确认时该实例会被保留并记录原因",
+            })
+            continue
+        info = _instance_change_info(scene, inst, old_def, new_def)
+        overrides = []
+        old_index = {n.id: n for n in old_def.nodes}
+        for tid, override in sorted(inst.overrides.items()):
+            node = old_index.get(tid)
+            current = scene.index().get(inst.node_map.get(tid, ""))
+            overrides.append({
+                "template_id": tid,
+                "name": node.name if node else tid,
+                "position": list(current.transform.position) if current else None,
+                "rotation": list(current.transform.rotation) if current else None,
+                "scale": list(current.transform.scale) if current else None,
+                "template_position": list(node.transform.position) if node else None,
+                "template_scale": list(node.transform.scale) if node else None,
+                "removed_in_candidate": tid not in candidate_template_ids,
+            })
+        impact = _selection_impact(scene, top, path, old_def, new_def)
+        items.append({
+            "top_instance_id": top.id,
+            "path": list(path),
+            "instance_id": inst.id,
+            "instance_name": label,
+            "assembly_id": assembly_id,
+            "assembly_name": new_def.name,
+            "from_version": inst.pinned_version,
+            "to_version": candidate_version,
+            "changed": info["changed"],
+            "removed": info["removed"],
+            "added": info["added"],
+            "slots_removed": info["slots_removed"],
+            "slots_added": info["slots_added"],
+            "overrides": overrides,
+            "selection_ref_impact": impact,
+            "up_to_date": inst.pinned_version == candidate_version,
+        })
+    return {"items": items, "missing": missing}
+
+
+def create_upgrade_batch(
+    scene: Scene,
+    assembly_id: str,
+    candidate_version: int,
+    name: Optional[str] = None,
+    decisions: Optional[List[BatchDecision]] = None,
+) -> tuple:
+    """创建待确认批次并保存进场景记录（可稍后继续）；不改动现场实例。"""
+    scene = scene.model_copy(deep=True)
+    new_def = _definition_at(scene, assembly_id, candidate_version)
+    if new_def is None:
+        raise SceneError(f"{_assembly_name(scene, assembly_id)} v{candidate_version} 不可用")
+    existing = {b.id for b in scene.upgrade_batches} | {n.id for n in scene.nodes}
+    batch = UpgradeBatch(
+        id=_new_id(existing),
+        name=name or f"批次 {len(scene.upgrade_batches) + 1}",
+        assembly_id=assembly_id,
+        candidate_version=candidate_version,
+        created_at=time.time(),
+        status="open",
+        decisions=list(decisions or []),
+    )
+    scene.upgrade_batches.append(batch)
+    return scene, batch
+
+
+def save_batch_decisions(scene: Scene, batch_id: str, decisions: List[BatchDecision]) -> Scene:
+    """保存/更新一批实例的选择（可随时继续），现场实例在确认前保持原版本。"""
+    scene = scene.model_copy(deep=True)
+    batch = _require_batch(scene, batch_id)
+    if batch.status != "open":
+        raise SceneError("该批次已确认或已撤回，请新建批次")
+    merged = {(d.top_instance_id, tuple(d.path)): d for d in batch.decisions}
+    for decision in decisions:
+        merged[(decision.top_instance_id, tuple(decision.path))] = decision
+    batch.decisions = list(merged.values())
+    return scene
+
+
+def confirm_upgrade_batch(scene: Scene, batch_id: str) -> Scene:
+    """确认一批：仅本批 upgrade 的实例采用候选版；未确认实例与其他批次保持原版本。"""
+    scene = scene.model_copy(deep=True)
+    batch = _require_batch(scene, batch_id)
+    if batch.status != "open":
+        raise SceneError("该批次已确认或已撤回")
+    decisions = [d for d in batch.decisions if d.action == "upgrade"]
+    warnings: List[str] = []
+    rollbacks: List[BatchRollback] = []
+    tops = {}
+    for decision in decisions:
+        tops.setdefault(decision.top_instance_id, []).append(decision)
+    for top_id, group in tops.items():
+        top = next((i for i in scene.assembly_instances if i.id == top_id), None)
+        if top is None:
+            warnings.append(f"顶层实例 {top_id} 已不存在，批内相关决定跳过")
+            continue
+        for decision in group:
+            path = list(decision.path)
+            inst = _find_nested(top, path)
+            if inst is None or inst.assembly_id != batch.assembly_id:
+                warnings.append(f"{decision.instance_name or '实例'} 已不存在，跳过该决定")
+                continue
+            if inst.pinned_version == batch.candidate_version:
+                continue
+            from_version = inst.pinned_version
+            error = _rematerialize_top_with_target(scene, top, path, batch.candidate_version, None)
+            if error:
+                warnings.append(error)
+                continue
+            updated = _find_nested(top, path)
+            rollbacks.append(BatchRollback(
+                top_instance_id=top_id,
+                path=path,
+                assembly_id=batch.assembly_id,
+                from_version=from_version,
+                to_version=batch.candidate_version,
+                snapshot=_snapshot_instance_version(updated),
+            ))
+    batch.rollback = rollbacks
+    batch.warnings = warnings
+    batch.status = "confirmed"
+    return scene
+
+
+def withdraw_upgrade_batch(scene: Scene, batch_id: str) -> Scene:
+    """撤回一批：仅还原本批升过级的实例到旧版本与覆盖；其他已确认批次不回退。"""
+    scene = scene.model_copy(deep=True)
+    batch = _require_batch(scene, batch_id)
+    if batch.status != "confirmed":
+        raise SceneError("只有已确认的批次可以撤回")
+    warnings: List[str] = list(batch.warnings)
+    for record in reversed(batch.rollback):
+        top = next((i for i in scene.assembly_instances if i.id == record.top_instance_id), None)
+        if top is None:
+            warnings.append(f"顶层实例 {record.top_instance_id} 已不存在，无法还原该批记录")
+            continue
+        error = _rematerialize_top_with_target(
+            scene, top, list(record.path), record.from_version, record.snapshot
+        )
+        if error:
+            warnings.append(
+                f"{record.assembly_id} v{record.from_version} 缺失：{error}；"
+                "受影响实例已保留并记录原因"
+            )
+    batch.status = "withdrawn"
+    batch.warnings = warnings
+    return scene

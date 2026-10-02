@@ -2,6 +2,8 @@ import { create } from "zustand";
 import * as THREE from "three";
 import { api } from "./api";
 import type {
+  BatchDecision,
+  BatchUpgradePreview,
   AssemblyUpdatePreview,
   ReleaseDerivePreview,
   Scene,
@@ -30,6 +32,7 @@ function withAssemblyCollections(scene: Scene): Scene {
     assembly_instances: scene.assembly_instances ?? [],
     assembly_history: scene.assembly_history ?? [],
     releases: scene.releases ?? [],
+    upgrade_batches: scene.upgrade_batches ?? [],
   };
 }
 
@@ -95,6 +98,7 @@ interface State {
   future: Scene[];
   busy: string | null;
   error: string | null;
+  loadError: string | null;
   dirty: boolean;
   assemblyEditMode: "override" | "template";
 
@@ -131,6 +135,21 @@ interface State {
     releaseId: string,
     upgrades: Record<string, number>
   ) => Promise<ReleaseDerivePreview>;
+  fetchBatchPreview: (
+    assemblyId: string,
+    candidateVersion: number
+  ) => Promise<BatchUpgradePreview>;
+  createBatch: (
+    assemblyId: string,
+    candidateVersion: number,
+    name: string
+  ) => Promise<string>;
+  saveBatchDecisions: (
+    batchId: string,
+    decisions: BatchDecision[]
+  ) => Promise<void>;
+  confirmBatch: (batchId: string) => Promise<void>;
+  withdrawBatch: (batchId: string) => Promise<void>;
   applyAssemblyUpdate: (
     assemblyId: string,
     choices: {
@@ -176,13 +195,23 @@ export const useStore = create<State>((set, get) => {
 
   return {
     sceneId: null,
-    scene: { version: 1, nodes: [], root_ids: [], assembly_defs: [], assembly_instances: [] },
+    scene: {
+      version: 1,
+      nodes: [],
+      root_ids: [],
+      assembly_defs: [],
+      assembly_instances: [],
+      assembly_history: [],
+      releases: [],
+      upgrade_batches: [],
+    },
     selectedId: null,
     world: [],
     past: [],
     future: [],
     busy: null,
     error: null,
+    loadError: null,
     dirty: false,
     assemblyEditMode: "override",
     pendingUpdates: [],
@@ -190,7 +219,11 @@ export const useStore = create<State>((set, get) => {
     async init() {
       const list = await api.listScenes().catch(() => ({ scenes: [] }));
       if (list.scenes.length > 0) {
-        await get().loadScene(list.scenes[0].scene_id);
+        try {
+          await get().loadScene(list.scenes[0].scene_id);
+        } catch {
+          // loadScene 已保留错误信息；界面仍可操作（新建/另存），不会覆盖坏文档
+        }
       } else {
         await get().newScene();
       }
@@ -208,31 +241,44 @@ export const useStore = create<State>((set, get) => {
         world: [],
         dirty: false,
         error: null,
+        loadError: null,
         assemblyEditMode: "override",
       });
     },
 
     async loadScene(id) {
-      const { scene: loaded } = await api.loadScene(id);
-      const scene = withAssemblyCollections(loaded);
-      const selectedId = resolveSelectionRef(scene, scene.selection ?? null);
-      set({
-        sceneId: id,
-        scene,
-        past: [],
-        future: [],
-        selectedId,
-        dirty: false,
-        error: null,
-        assemblyEditMode: "override",
-        pendingUpdates: [],
-      });
-      await get().refreshWorld();
+      try {
+        const { scene: loaded, load_error } = await api.loadScene(id);
+        const scene = withAssemblyCollections(loaded);
+        const selectedId = resolveSelectionRef(scene, scene.selection ?? null);
+        set({
+          sceneId: id,
+          scene,
+          past: [],
+          future: [],
+          selectedId,
+          dirty: false,
+          error: null,
+          loadError: load_error ?? null,
+          assemblyEditMode: "override",
+          pendingUpdates: [],
+        });
+        await get().refreshWorld();
+      } catch (err) {
+        set({ loadError: (err as Error).message, error: (err as Error).message });
+        throw err;
+      }
     },
 
     async save() {
       const { sceneId, scene } = get();
       if (!sceneId) return;
+      if (get().loadError) {
+        set({
+          error: "原场景尚未成功读取，拒绝覆盖保存；请新建场景另存，或修复后再保存。",
+        });
+        return;
+      }
       set({ busy: "保存中…" });
       try {
         const selection = makeSelectionRef(scene, get().selectedId);
@@ -480,6 +526,34 @@ export const useStore = create<State>((set, get) => {
     async fetchDerivePreview(releaseId, upgrades) {
       const { scene } = get();
       return api.releaseDerivePreview(scene, releaseId, upgrades);
+    },
+
+    async fetchBatchPreview(assemblyId, candidateVersion) {
+      const { scene } = get();
+      return api.batchPreview(scene, assemblyId, candidateVersion);
+    },
+
+    async createBatch(assemblyId, candidateVersion, name) {
+      const { scene } = get();
+      const result = await api.batchCreate(scene, assemblyId, candidateVersion, name);
+      const next = withAssemblyCollections(result.scene);
+      await commit(Promise.resolve({ scene: next }));
+      return result.batch.id;
+    },
+
+    async saveBatchDecisions(batchId, decisions) {
+      const { scene } = get();
+      await commit(api.batchDecide(scene, batchId, decisions));
+    },
+
+    async confirmBatch(batchId) {
+      const { scene } = get();
+      await commit(api.batchConfirm(scene, batchId));
+    },
+
+    async withdrawBatch(batchId) {
+      const { scene } = get();
+      await commit(api.batchWithdraw(scene, batchId));
     },
 
     async applyAssemblyUpdate(assemblyId, choices) {

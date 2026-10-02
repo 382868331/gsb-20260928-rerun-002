@@ -30,9 +30,71 @@ export interface Scene {
   root_ids: string[];
   assembly_defs: AssemblyDefinition[];
   assembly_instances: AssemblyInstance[];
-  assembly_history?: AssemblyDefinition[];
-  releases?: ReleaseSnapshot[];
+  assembly_history: AssemblyDefinition[];
+  releases: ReleaseSnapshot[];
+  upgrade_batches: UpgradeBatch[];
   selection?: SelectionRef | null;
+}
+
+export interface BatchDecision {
+  top_instance_id: string;
+  path: string[];
+  instance_name?: string;
+  action: "keep" | "upgrade";
+}
+
+export interface BatchRollback {
+  top_instance_id: string;
+  path: string[];
+  assembly_id: string;
+  from_version: number;
+  to_version: number;
+  snapshot: unknown;
+}
+
+export interface UpgradeBatch {
+  id: string;
+  name: string;
+  assembly_id: string;
+  candidate_version: number;
+  created_at: number;
+  status: "open" | "confirmed" | "withdrawn";
+  decisions: BatchDecision[];
+  rollback: BatchRollback[];
+  warnings: string[];
+}
+
+export interface BatchOverrideInfo {
+  template_id: string;
+  name: string;
+  position: Vec3 | null;
+  rotation: Quat | null;
+  scale: Vec3 | null;
+  template_position: Vec3 | null;
+  template_scale: Vec3 | null;
+  removed_in_candidate: boolean;
+}
+
+export interface BatchPreviewItem extends ReleasePreviewItem {
+  top_instance_id: string;
+  path: string[];
+  overrides: BatchOverrideInfo[];
+  selection_ref_impact: { lost_refs: string[]; top_instance_id: string; path: string[] };
+  up_to_date: boolean;
+}
+
+export interface BatchUpgradePreview {
+  items: BatchPreviewItem[];
+  missing: {
+    top_instance_id: string;
+    path: string[];
+    instance_id: string;
+    instance_name: string;
+    assembly_id: string;
+    assembly_name: string;
+    version: number;
+    reason: string;
+  }[];
 }
 
 export interface AssemblyBinding {

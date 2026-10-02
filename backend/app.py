@@ -15,6 +15,10 @@ from pydantic import BaseModel
 from . import scene_ops
 from .models import (
     AddNodeRequest,
+    BatchCreateRequest,
+    BatchDecideRequest,
+    BatchIdRequest,
+    BatchPreviewRequest,
     AssemblySlotRequest,
     AssemblyUpdateApplyRequest,
     AssemblyUpdatePreviewRequest,
@@ -30,7 +34,13 @@ from .models import (
     SelectionRequest,
     TransformRequest,
 )
-from .storage import delete_scene, list_scenes, load_scene, save_scene
+from .storage import (
+    SceneLoadError,
+    delete_scene,
+    list_scenes,
+    load_scene_with_warning,
+    save_scene,
+)
 
 app = FastAPI(title="三维场景创作平台 API", version="0.1.0")
 
@@ -80,15 +90,25 @@ async def scenes_create(req: CreateRequest):
 @app.get("/api/scenes/{scene_id}")
 async def scenes_get(scene_id: str):
     try:
-        return {"scene_id": scene_id, "scene": load_scene(scene_id)}
+        scene, warning = load_scene_with_warning(scene_id)
+        return {"scene_id": scene_id, "scene": scene, "load_error": warning}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="场景不存在")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except SceneLoadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.put("/api/scenes/{scene_id}")
 async def scenes_save(scene_id: str, req: SaveRequest):
+    # 读取失败的文档禁止用空/新场景覆盖：空场景保存必须显式带 overwrite_empty=true
+    if not req.scene.nodes and not req.scene.assembly_instances:
+        from .storage import _path
+
+        if _path(scene_id).exists():
+            raise HTTPException(
+                status_code=409,
+                detail="磁盘上已有场景内容，拒绝用空场景覆盖；请先成功读取原场景或另存新场景",
+            )
     save_scene(scene_id, req.scene)
     return {"scene_id": scene_id, "saved": True, "node_count": len(req.scene.nodes)}
 
@@ -211,6 +231,42 @@ async def op_release_derive_preview(req: DeriveReleaseRequest):
         return scene_ops.release_derive_preview(req.scene, req.release_id, req.upgrades)
     except scene_ops.SceneError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ops/batch/preview")
+async def op_batch_preview(req: BatchPreviewRequest):
+    try:
+        return scene_ops.batch_upgrade_preview(
+            req.scene, req.assembly_id, req.candidate_version
+        )
+    except scene_ops.SceneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ops/batch/create")
+async def op_batch_create(req: BatchCreateRequest):
+    try:
+        scene, batch = scene_ops.create_upgrade_batch(
+            req.scene, req.assembly_id, req.candidate_version, req.name
+        )
+        return {"scene": scene, "batch": batch}
+    except scene_ops.SceneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ops/batch/decide")
+async def op_batch_decide(req: BatchDecideRequest):
+    return _run(scene_ops.save_batch_decisions, req.scene, req.batch_id, req.decisions)
+
+
+@app.post("/api/ops/batch/confirm")
+async def op_batch_confirm(req: BatchIdRequest):
+    return _run(scene_ops.confirm_upgrade_batch, req.scene, req.batch_id)
+
+
+@app.post("/api/ops/batch/withdraw")
+async def op_batch_withdraw(req: BatchIdRequest):
+    return _run(scene_ops.withdraw_upgrade_batch, req.scene, req.batch_id)
 
 
 @app.post("/api/ops/assembly/transform")

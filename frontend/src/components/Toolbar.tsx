@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../lib/store";
-import { PRIMITIVE_TYPES, type ReleaseDerivePreview, type ReleaseSnapshot } from "../lib/types";
+import {
+  PRIMITIVE_TYPES,
+  type BatchDecision,
+  type BatchPreviewItem,
+  type BatchUpgradePreview,
+  type ReleaseDerivePreview,
+  type ReleaseSnapshot,
+  type UpgradeBatch,
+} from "../lib/types";
 import { api, type SceneMeta } from "../lib/api";
 
 const LABELS: Record<string, string> = {
@@ -37,12 +45,18 @@ export function Toolbar() {
   const pendingUpdates = useStore((s) => s.pendingUpdates);
   const setPendingUpdates = useStore((s) => s.setPendingUpdates);
   const applyAssemblyUpdate = useStore((s) => s.applyAssemblyUpdate);
-  const releases = useStore((s) => s.scene.releases ?? []);
-  const assemblyHistory = useStore((s) => s.scene.assembly_history ?? []);
+  const releases = useStore((s) => s.scene.releases);
+  const assemblyHistory = useStore((s) => s.scene.assembly_history);
+  const batches = useStore((s) => s.scene.upgrade_batches);
   const publishRelease = useStore((s) => s.publishRelease);
   const openRelease = useStore((s) => s.openRelease);
   const deriveRelease = useStore((s) => s.deriveRelease);
   const fetchDerivePreview = useStore((s) => s.fetchDerivePreview);
+  const fetchBatchPreview = useStore((s) => s.fetchBatchPreview);
+  const createBatch = useStore((s) => s.createBatch);
+  const saveBatchDecisions = useStore((s) => s.saveBatchDecisions);
+  const confirmBatch = useStore((s) => s.confirmBatch);
+  const withdrawBatch = useStore((s) => s.withdrawBatch);
   const hasInstances = useStore((s) => s.scene.assembly_instances.length > 0);
   const selectedNode = useStore((s) =>
     s.scene.nodes.find((n) => n.id === s.selectedId) ?? null
@@ -51,6 +65,9 @@ export function Toolbar() {
   const [previewing, setPreviewing] = useState(false);
   const [releaseChoice, setReleaseChoice] = useState("");
   const [deriving, setDeriving] = useState<ReleaseSnapshot | null>(null);
+  const [batchTarget, setBatchTarget] = useState<
+    { assemblyId: string; assemblyName: string; version: number } | null
+  >(null);
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -185,18 +202,37 @@ export function Toolbar() {
         >
           派生…
         </button>
+
+        <button
+          disabled={assemblyHistory.length === 0 && assemblies.length === 0}
+          title="按使用批次分批采用子装配升级：同一发布总成的不同实例分别保留旧版或采用候选版"
+          onClick={() => {
+            const withVersion = assemblies.filter((d) => d.version > 1);
+            const pick = withVersion[0] ?? assemblies[0];
+            if (pick) {
+              setBatchTarget({
+                assemblyId: pick.id,
+                assemblyName: pick.name,
+                version: pick.version,
+              });
+            }
+          }}
+        >
+          分批升级…
+        </button>
       </div>
       <div className="spacer" />
       <select
         value={sceneId ?? ""}
         onChange={(e) => {
           if (e.target.value === "__new") void newScene().then(refresh);
-          else void loadScene(e.target.value);
+          else void loadScene(e.target.value).catch(() => {});
         }}
       >
         {scenes.map((s) => (
           <option key={s.scene_id} value={s.scene_id}>
-            {s.scene_id}（{s.node_count} 节点）
+            {s.load_error ? "⚠ " : ""}{s.scene_id}
+            {s.load_error ? "（读取失败）" : `（${s.node_count} 节点）`}
           </option>
         ))}
         <option value="__new">＋ 新建场景…</option>
@@ -204,7 +240,9 @@ export function Toolbar() {
       <button className="primary" onClick={() => void save().then(refresh)}>
         保存{dirty ? " ●" : ""}
       </button>
-      <span className="status">{error ? "⚠ " + error : busy ?? ""}</span>
+      <span className="status" title={error ?? busy ?? ""}>
+        {error ? "⚠ " + error : busy ?? ""}
+      </span>
       {pendingUpdates.length > 0 && (
         <UpdateDialog
           updates={pendingUpdates}
@@ -227,6 +265,29 @@ export function Toolbar() {
             setDeriving(null);
           }}
           onClose={() => setDeriving(null)}
+        />
+      )}
+      {batchTarget && (
+        <BatchDialog
+          target={batchTarget}
+          history={assemblyHistory}
+          batches={batches}
+          onPreview={(version) => fetchBatchPreview(batchTarget.assemblyId, version)}
+          onCreate={async (name, version, decisions) => {
+            const id = await createBatch(batchTarget.assemblyId, version, name);
+            await saveBatchDecisions(id, decisions);
+            await confirmBatch(id);
+          }}
+          onSaveOnly={async (name, version, decisions) => {
+            const id = await createBatch(batchTarget.assemblyId, version, name);
+            await saveBatchDecisions(id, decisions);
+          }}
+          onWithdraw={(id) => withdrawBatch(id)}
+          onContinue={async (id, decisions) => {
+            await saveBatchDecisions(id, decisions);
+            await confirmBatch(id);
+          }}
+          onClose={() => setBatchTarget(null)}
         />
       )}
     </div>
@@ -521,6 +582,263 @@ function UpdateDialog({
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function BatchDialog({
+  target,
+  history,
+  batches,
+  onPreview,
+  onCreate,
+  onSaveOnly,
+  onWithdraw,
+  onContinue,
+  onClose,
+}: {
+  target: { assemblyId: string; assemblyName: string; version: number };
+  history: { id: string; version: number }[];
+  batches: UpgradeBatch[];
+  onPreview: (version: number) => Promise<BatchUpgradePreview>;
+  onCreate: (
+    name: string,
+    version: number,
+    decisions: BatchDecision[]
+  ) => Promise<void>;
+  onSaveOnly: (
+    name: string,
+    version: number,
+    decisions: BatchDecision[]
+  ) => Promise<void>;
+  onWithdraw: (batchId: string) => Promise<void>;
+  onContinue: (batchId: string, decisions: BatchDecision[]) => Promise<void>;
+  onClose: () => void;
+}) {
+  const versionsOf = (assemblyId: string): number[] => {
+    const set = new Set<number>();
+    for (const def of history) if (def.id === assemblyId) set.add(def.version);
+    return [...set].sort((a, b) => a - b);
+  };
+
+  const [version, setVersion] = useState(target.version);
+  const [batchName, setBatchName] = useState("");
+  const [preview, setPreview] = useState<BatchUpgradePreview | null>(null);
+  const [choices, setChoices] = useState<Record<string, "keep" | "upgrade">>({});
+  const [busy, setBusy] = useState(false);
+
+  const itemKey = (item: BatchPreviewItem) =>
+    item.top_instance_id + "|" + item.path.join("/");
+
+  const refresh = async (ver: number) => {
+    setBusy(true);
+    try {
+      const result = await onPreview(ver);
+      setPreview(result);
+      const initial: Record<string, "keep" | "upgrade"> = {};
+      for (const item of result.items) {
+        if (!item.up_to_date) initial[itemKey(item)] = "keep";
+      }
+      setChoices(initial);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh(version);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
+
+  const decisionsFor = (): BatchDecision[] =>
+    (preview?.items ?? []).map((item) => ({
+      top_instance_id: item.top_instance_id,
+      path: item.path,
+      instance_name: item.instance_name,
+      action: item.up_to_date ? "upgrade" : (choices[itemKey(item)] ?? "keep"),
+    }));
+
+  const relatedBatches = batches.filter((b) => b.assembly_id === target.assemblyId);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal update-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>分批采用「{target.assemblyName}」升级</h3>
+        <p className="modal-hint">
+          同一发布总成的多个实例可分属不同批次：本批仅采用勾选的实例；未确认实例保持原版本，
+          两批共用子装配也不会互相带走覆盖与选择。
+        </p>
+        <div className="update-instance-head">
+          <strong>候选版本</strong>
+          <select
+            value={version}
+            onChange={(e) => setVersion(Number(e.target.value))}
+          >
+            {versionsOf(target.assemblyId).map((v) => (
+              <option key={v} value={v}>
+                v{v}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {relatedBatches.length > 0 && (
+          <div className="update-group">
+            <div className="update-group-title">已保存的批次（可继续或撤回）</div>
+            {relatedBatches.map((batch) => (
+              <div key={batch.id} className="update-instance">
+                <div className="update-instance-head">
+                  <strong>
+                    {batch.name}（候选 v{batch.candidate_version}）
+                  </strong>
+                  <span className="badge">
+                    {batch.status === "open"
+                      ? "待确认"
+                      : batch.status === "confirmed"
+                        ? "已确认"
+                        : "已撤回"}
+                  </span>
+                  {batch.status === "open" && (
+                    <button
+                      className="primary"
+                      onClick={() => void onContinue(batch.id, decisionsFor())}
+                    >
+                      用当前选择确认该批
+                    </button>
+                  )}
+                  {batch.status === "confirmed" && (
+                    <button onClick={() => void onWithdraw(batch.id)}>
+                      撤回该批（其他批次不回退）
+                    </button>
+                  )}
+                </div>
+                {batch.warnings.length > 0 && (
+                  <ul className="update-list">
+                    {batch.warnings.map((w, i) => (
+                      <li key={i} className="warn">{w}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {preview && (
+          <div className="update-group">
+            {preview.missing.map((item) => (
+              <div key={item.top_instance_id + item.path.join("/")} className="warn">
+                版本不可用：{item.instance_name} 需要 {item.assembly_name} v{item.version}；
+                {item.reason}
+              </div>
+            ))}
+            {preview.items.map((item) => (
+              <div key={itemKey(item)} className="update-instance">
+                <div className="update-instance-head">
+                  <strong>
+                    {item.instance_name}：v{item.from_version} → v{item.to_version}
+                  </strong>
+                  {item.up_to_date ? (
+                    <span className="badge">已是候选版</span>
+                  ) : (
+                    <select
+                      value={choices[itemKey(item)] ?? "keep"}
+                      onChange={(e) =>
+                        setChoices((prev) => ({
+                          ...prev,
+                          [itemKey(item)]: e.target.value as "keep" | "upgrade",
+                        }))
+                      }
+                    >
+                      <option value="keep">保留旧版</option>
+                      <option value="upgrade">本批采用候选版</option>
+                    </select>
+                  )}
+                </div>
+                {item.overrides.length > 0 && (
+                  <ul className="update-list">
+                    {item.overrides.map((ov) => (
+                      <li key={ov.template_id}>
+                        实例覆盖：{ov.name}
+                        {ov.position ? ` 位置(${ov.position.map((v) => v.toFixed(2)).join(", ")})` : ""}
+                        {ov.scale ? ` 缩放(${ov.scale.map((v) => v.toFixed(2)).join(", ")})` : ""}
+                        {ov.removed_in_candidate ? (
+                          <em className="warn"> · 候选版已删除该部件，升级后作为普通节点保留</em>
+                        ) : (
+                          <em> · 升级后覆盖仍作用于该实例</em>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.removed.length > 0 && (
+                  <ul className="update-list">
+                    {item.removed.map((change) => (
+                      <li key={change.template_id} className="warn">
+                        被删除部件：{change.path}（保留为普通节点，不删现场）
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.changed.length > 0 && (
+                  <ul className="update-list">
+                    {item.changed.map((change) => (
+                      <li key={change.template_id}>
+                        上游变化：{change.path}
+                        {change.has_local_override ? <em className="warn"> · 该部件有实例覆盖</em> : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {item.selection_ref_impact.lost_refs.length > 0 && (
+                  <ul className="update-list">
+                    {item.selection_ref_impact.lost_refs.map((ref) => (
+                      <li key={ref} className="warn">
+                        选择引用将失效：{ref}（被删除部件/槽）
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <input
+            value={batchName}
+            onChange={(e) => setBatchName(e.target.value)}
+            placeholder="批次名称，如：供应批次 B"
+          />
+          <button
+            className="primary"
+            disabled={busy || !preview}
+            onClick={() =>
+              void onCreate(
+                batchName || `批次 ${batches.length + 1}`,
+                version,
+                decisionsFor()
+              )
+            }
+          >
+            保存并确认本批（可撤销/撤回）
+          </button>
+          <button
+            disabled={busy || !preview}
+            title="只保存本批决定到记录，稍后从保存的场景继续；现场不变"
+            onClick={() =>
+              void onSaveOnly(
+                batchName || `批次 ${batches.length + 1}`,
+                version,
+                decisionsFor()
+              )
+            }
+          >
+            仅保存决定（继续编辑）
+          </button>
+          <button onClick={onClose}>关闭</button>
+        </div>
       </div>
     </div>
   );

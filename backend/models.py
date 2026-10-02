@@ -110,6 +110,47 @@ class ReleaseSnapshot(BaseModel):
     created_at: float = 0.0
     definitions: List[AssemblyDefinition] = Field(default_factory=list)
     instances: List[ReleaseInstanceState] = Field(default_factory=list)
+
+
+class BatchDecision(BaseModel):
+    """批次内一个实例（按 顶层实例 + 槽路径 定位）的采用决定。"""
+
+    top_instance_id: str
+    path: List[str] = Field(default_factory=list)
+    instance_name: str = ""
+    action: Literal["keep", "upgrade"] = "keep"
+
+
+class BatchRollback(BaseModel):
+    """批次确认时记录的单实例升级前现场，用于撤回该批而不影响其他批次。
+
+    snapshot 是与具体节点 id 无关的递归结构：
+    {pinned_version, overrides, detached, children: {slot_key: snapshot}}。
+    """
+
+    top_instance_id: str
+    path: List[str] = Field(default_factory=list)
+    assembly_id: str
+    from_version: int
+    to_version: int
+    snapshot: dict = Field(default_factory=dict)
+
+
+class UpgradeBatch(BaseModel):
+    """一次分批采用记录：同一发布总成的若干实例在本批中保留旧版或采用候选版。"""
+
+    id: str
+    name: str = ""
+    assembly_id: str
+    candidate_version: int
+    created_at: float = 0.0
+    status: Literal["open", "confirmed", "withdrawn"] = "open"
+    decisions: List[BatchDecision] = Field(default_factory=list)
+    rollback: List[BatchRollback] = Field(default_factory=list)
+    # 撤回 / 继续时缺失版本而保留下来的实例及可解释原因
+    warnings: List[str] = Field(default_factory=list)
+
+
 class SelectionRef(BaseModel):
     """稳定的选中对象引用：刷新重生成节点 id 后仍能定位同一部件。"""
 
@@ -127,6 +168,7 @@ class Scene(BaseModel):
     assembly_instances: List[AssemblyInstance] = Field(default_factory=list)
     assembly_history: List[AssemblyDefinition] = Field(default_factory=list)
     releases: List[ReleaseSnapshot] = Field(default_factory=list)
+    upgrade_batches: List[UpgradeBatch] = Field(default_factory=list)
     selection: Optional[SelectionRef] = None
 
     def index(self) -> dict:
@@ -226,6 +268,32 @@ class DeriveReleaseRequest(BaseModel):
     upgrades: dict[str, int] = Field(default_factory=dict)
 
 
+class BatchPreviewRequest(BaseModel):
+    scene: Scene
+    release_id: Optional[str] = None
+    assembly_id: str
+    candidate_version: int
+
+
+class BatchCreateRequest(BaseModel):
+    scene: Scene
+    release_id: Optional[str] = None
+    assembly_id: str
+    candidate_version: int
+    name: Optional[str] = None
+
+
+class BatchDecideRequest(BaseModel):
+    scene: Scene
+    batch_id: str
+    decisions: List[BatchDecision] = Field(default_factory=list)
+
+
+class BatchIdRequest(BaseModel):
+    scene: Scene
+    batch_id: str
+
+
 class SceneId(BaseModel):
     scene_id: str
 
@@ -240,3 +308,4 @@ def transform_from_euler(position=None, euler=None, scale=None) -> Transform:
 
 AssemblyInstance.model_rebuild()
 ReleaseInstanceState.model_rebuild()
+UpgradeBatch.model_rebuild()

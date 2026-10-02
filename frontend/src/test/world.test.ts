@@ -32,6 +32,9 @@ function buildScene(): Scene {
     root_ids: [A, D],
     assembly_defs: [],
     assembly_instances: [],
+    assembly_history: [],
+    releases: [],
+    upgrade_batches: [],
     nodes: [
       node(A, "A", "group", null, { position: [1, 2, 3], rotation: qZ90, scale: [2, 2, 2] }, [B]),
       node(B, "B", "cube", A, { position: [1, 0, 0], rotation: qY90, scale: [0.5, 2, 1] }, [C]),

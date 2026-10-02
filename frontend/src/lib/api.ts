@@ -36,13 +36,16 @@ export interface SceneMeta {
   scene_id: string;
   node_count: number;
   updated_at: number;
+  load_error?: string | null;
 }
 
 export const api = {
   listScenes: () => request<{ scenes: SceneMeta[] }>("/scenes"),
   createScene: () => request<{ scene_id: string; scene: Scene }>("/scenes", {}),
   loadScene: (id: string) =>
-    request<{ scene_id: string; scene: Scene }>(`/scenes/${id}`),
+    request<{ scene_id: string; scene: Scene; load_error?: string | null }>(
+      `/scenes/${id}`
+    ),
   saveScene: (id: string, scene: Scene) =>
     put<{ saved: boolean }>(`/scenes/${id}`, { scene }),
   addNode: (scene: Scene, type: string, parent_id: string | null) =>
@@ -171,6 +174,43 @@ export const api = {
       release_id,
       upgrades,
     }),
+
+  batchPreview: (
+    scene: Scene,
+    assemblyId: string,
+    candidateVersion: number
+  ) =>
+    request<import("./types").BatchUpgradePreview>("/ops/batch/preview", {
+      scene,
+      assembly_id: assemblyId,
+      candidate_version: candidateVersion,
+    }),
+  batchCreate: (
+    scene: Scene,
+    assemblyId: string,
+    candidateVersion: number,
+    name?: string
+  ) =>
+    request<{ scene: Scene; batch: import("./types").UpgradeBatch }>("/ops/batch/create", {
+      scene,
+      assembly_id: assemblyId,
+      candidate_version: candidateVersion,
+      name,
+    }),
+  batchDecide: (
+    scene: Scene,
+    batchId: string,
+    decisions: import("./types").BatchDecision[]
+  ) =>
+    request<{ scene: Scene }>("/ops/batch/decide", {
+      scene,
+      batch_id: batchId,
+      decisions,
+    }),
+  batchConfirm: (scene: Scene, batchId: string) =>
+    request<{ scene: Scene }>("/ops/batch/confirm", { scene, batch_id: batchId }),
+  batchWithdraw: (scene: Scene, batchId: string) =>
+    request<{ scene: Scene }>("/ops/batch/withdraw", { scene, batch_id: batchId }),
 };
 
 type Vec3 = [number, number, number];
