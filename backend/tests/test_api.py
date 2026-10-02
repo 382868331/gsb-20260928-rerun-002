@@ -122,6 +122,83 @@ def test_full_workflow_sync(tmp_path):
     asyncio.run(main())
 
 
+def test_batch_upgrade_api_roundtrip(tmp_path):
+    os.environ["SCENE_STORE_DIR"] = str(tmp_path / "scenes")
+    transport = httpx.ASGITransport(app=app)
+
+    async def main():
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.post("/api/scenes", json={})
+            sid = r.json()["scene_id"]
+
+            async def op(path, **kw):
+                resp = await client.post(f"/api/ops/{path}", json=kw)
+                assert resp.status_code == 200, (path, resp.text)
+                return resp.json()
+
+            # 内装配件
+            s = (await client.post("/api/scenes", json={})).json()["scene"]
+            # 直接复用已创建场景文档：加组、件、制作为装配件
+            async def with_scene(payload):
+                resp = await client.post("/api/ops/add-node", json={"scene": payload, "type": "group", "name": "内总成"})
+                return resp.json()["scene"]
+            scene = (await client.post("/api/ops/add-node", json={"scene": s, "type": "group", "name": "内总成"})).json()["scene"]
+            inner_root = scene["root_ids"][0]
+            scene = (await client.post("/api/ops/add-node", json={"scene": scene, "type": "cube", "parent_id": inner_root, "name": "内件"})).json()["scene"]
+            inner_part = next(n["id"] for n in scene["nodes"] if n["parent_id"] == inner_root)
+            scene = (await client.post("/api/ops/transform", json={"scene": scene, "node_id": inner_part, "position": [1, 0, 0]})).json()["scene"]
+            scene = (await client.post("/api/ops/assembly/create", json={"scene": scene, "node_id": inner_root, "name": "内装配件"})).json()["scene"]
+            inner_def = scene["assembly_defs"][0]["id"]
+            scene = (await client.post("/api/ops/add-node", json={"scene": scene, "type": "group", "name": "外总成"})).json()["scene"]
+            outer_root = scene["root_ids"][0]
+            scene = (await client.post("/api/ops/assembly/create", json={"scene": scene, "node_id": outer_root, "name": "外装配件"})).json()["scene"]
+            outer_def = next(d["id"] for d in scene["assembly_defs"] if d["id"] != inner_def)
+            outer_root_id = next(d for d in scene["assembly_defs"] if d["id"] == outer_def)["root_ids"][0]
+            scene = (await client.post("/api/ops/assembly/add-slot", json={
+                "scene": scene,
+                "parent_definition_id": outer_def,
+                "parent_template_node_id": outer_root_id,
+                "assembly_id": inner_def,
+            })).json()["scene"]
+            scene = (await client.post("/api/ops/assembly/update-apply", json={"scene": scene, "assembly_id": outer_def})).json()["scene"]
+            scene = (await client.post("/api/ops/assembly/instantiate", json={"scene": scene, "assembly_id": outer_def, "position": [5, 0, 0]})).json()["scene"]
+            scene = (await client.post("/api/ops/assembly/instantiate", json={"scene": scene, "assembly_id": outer_def, "position": [8, 0, 0]})).json()["scene"]
+            tops = [i for i in scene["assembly_instances"] if i["assembly_id"] == outer_def and i["transform"]["position"][0] in (5.0, 8.0)]
+            id_a, id_b = [i["id"] for i in sorted(tops, key=lambda i: i["transform"]["position"][0])]
+            scene = (await client.post("/api/ops/release/publish", json={"scene": scene, "name": "发布"})).json()["scene"]
+            rid = scene["releases"][0]["id"]
+            # 升版内件
+            nid = next(i for i in scene["assembly_instances"] if i["id"] == id_a)["nested_instances"][0]["node_map"][inner_part]
+            scene = (await client.post("/api/ops/assembly/template-transform", json={"scene": scene, "node_id": nid, "position": [7, 0, 0]})).json()["scene"]
+            inner_v2 = next(d["version"] for d in scene["assembly_defs"] if d["id"] == inner_def)
+
+            prev = (await client.post("/api/ops/release/batch-preview", json={
+                "scene": scene, "release_id": rid, "instance_ids": [id_a],
+                "instance_targets": {id_a: {inner_def: inner_v2}},
+            })).json()
+            assert prev["missing"] == [] and prev["items"][0]["to_version"] == 2
+
+            scene = (await client.post("/api/ops/release/batch-confirm", json={
+                "scene": scene, "release_id": rid, "instance_ids": [id_a],
+                "instance_targets": {id_a: {inner_def: inner_v2}}, "batch_name": "第一批",
+            })).json()["scene"]
+            tops = {i["id"]: i for i in scene["assembly_instances"]}
+            assert tops[id_a]["nested_instances"][0]["pinned_version"] == 2
+            assert tops[id_b]["nested_instances"][0]["pinned_version"] == 1
+
+            status = (await client.post("/api/ops/release/batch-status", json={"scene": scene, "release_id": rid})).json()
+            assert {b["name"] for b in status["batches"]} == {"第一批"}
+            batch_id = status["batches"][0]["batch_id"]
+
+            # 保存并重新载入，批次决定仍在
+            await client.put(f"/api/scenes/{sid}", json={"scene": scene})
+            scene = (await client.get(f"/api/scenes/{sid}")).json()["scene"]
+            scene = (await client.post("/api/ops/release/batch-withdraw", json={"scene": scene, "batch_id": batch_id})).json()["scene"]
+            tops = {i["id"]: i for i in scene["assembly_instances"]}
+            assert tops[id_a]["nested_instances"][0]["pinned_version"] == 1
+            assert tops[id_b]["nested_instances"][0]["pinned_version"] == 1
+
+
 def test_nested_assembly_update_workflow():
     async def main():
         transport = httpx.ASGITransport(app=app)

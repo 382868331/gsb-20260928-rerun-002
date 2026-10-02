@@ -1,5 +1,7 @@
 import type {
   AssemblyUpdatePreview,
+  ReleaseBatchPreview,
+  ReleaseBatchStatus,
   ReleaseDerivePreview,
   Scene,
   SelectionRef,
@@ -170,6 +172,42 @@ export const api = {
       scene,
       release_id,
       upgrades,
+    }),
+  releaseBatchPreview: (
+    scene: Scene,
+    releaseId: string,
+    instanceIds: string[],
+    instanceTargets: Record<string, Record<string, number>>
+  ) =>
+    request<ReleaseBatchPreview>("/ops/release/batch-preview", {
+      scene,
+      release_id: releaseId,
+      instance_ids: instanceIds,
+      instance_targets: instanceTargets,
+    }),
+  releaseBatchConfirm: (
+    scene: Scene,
+    releaseId: string,
+    instanceIds: string[],
+    instanceTargets: Record<string, Record<string, number>>,
+    batchName?: string
+  ) =>
+    request<{ scene: Scene }>("/ops/release/batch-confirm", {
+      scene,
+      release_id: releaseId,
+      instance_ids: instanceIds,
+      instance_targets: instanceTargets,
+      batch_name: batchName ?? null,
+    }),
+  releaseBatchWithdraw: (scene: Scene, batchId: string) =>
+    request<{ scene: Scene }>("/ops/release/batch-withdraw", {
+      scene,
+      batch_id: batchId,
+    }),
+  releaseBatchStatus: (scene: Scene, releaseId: string) =>
+    request<ReleaseBatchStatus>("/ops/release/batch-status", {
+      scene,
+      release_id: releaseId,
     }),
 };
 

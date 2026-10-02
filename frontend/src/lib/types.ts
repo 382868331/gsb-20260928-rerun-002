@@ -118,6 +118,59 @@ export interface ReleaseDerivePreview {
   }[];
 }
 
+export interface ReleaseBatchPreview {
+  items: Array<
+    ReleasePreviewItem & {
+      top_instance_id: string;
+      path: string[];
+      overrides: Array<{
+        template_id: string;
+        path: string;
+        position: Vec3 | null;
+        rotation: [number, number, number, number] | null;
+        scale: Vec3 | null;
+        effect: string;
+      }>;
+      selection_refs: Array<{
+        top_instance_id: string;
+        path: string[];
+        template_id: string;
+        effect: string;
+      }>;
+    }
+  >;
+  kept: Array<{
+    top_instance_id?: string;
+    instance_id: string;
+    assembly_id: string;
+    assembly_name: string;
+    version: number;
+  }>;
+  missing: Array<{
+    assembly_id: string;
+    assembly_name: string;
+    version: number;
+    instance_names: string[];
+    reason: string;
+  }>;
+  not_in_batch: Array<{ instance_id: string; instance_name: string }>;
+}
+
+export interface ReleaseBatchStatus {
+  release_id: string;
+  release_name: string;
+  batches: Array<{ batch_id: string; name: string; created_at: number }>;
+  instances: Array<{
+    instance_id: string;
+    instance_name: string;
+    released_version: number;
+    live_version: number | null;
+    confirmed: boolean;
+    last_batch_id: string | null;
+    last_batch_name: string | null;
+  }>;
+}
+
 export interface SelectionRef {
   top_instance_id?: string | null;
   path?: string[];

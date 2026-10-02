@@ -14,6 +14,8 @@ from .models import (
     AssemblyInstance,
     AssemblyOverride,
     Node,
+    ReleaseBatch,
+    ReleaseBatchDecision,
     ReleaseInstanceState,
     ReleaseSnapshot,
     Scene,
@@ -24,6 +26,16 @@ from .transforms import compose, decompose, euler_xyz_from_quat, inverse, multip
 
 class SceneError(ValueError):
     pass
+
+
+def _clone_scene(scene: Scene) -> Scene:
+    """真正的深拷贝。
+
+    pydantic v2 的 ``model_copy(deep=True)`` 对同一图中被多处引用（如实例节点与
+    原件/历史/发布快照之间共享）的对象仍可能共享别名，就地修改会污染其它集合；
+    经 dump/validate 往返可彻底切断引用。
+    """
+    return Scene.model_validate(scene.model_dump())
 
 
 def _require(index: Dict[str, Node], node_id: str) -> Node:
@@ -123,7 +135,7 @@ def add_node(
     name: Optional[str] = None,
     position=None,
 ) -> Scene:
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     index = scene.index()
     if parent_id is not None:
         _require(index, parent_id)
@@ -160,7 +172,7 @@ def create_group_with_selection(scene: Scene, child_ids: List[str]) -> Scene:
     """新建组并把给定同级节点放进去；组取第一个子节点的世界变换（保持眼前位置）。"""
     if not child_ids:
         return add_node(scene, "group")
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     index = scene.index()
     for cid in child_ids:
         _require(index, cid)
@@ -224,7 +236,7 @@ def update_transform(
 ) -> Scene:
     from .transforms import quat_from_euler_xyz
 
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     node = _require(scene.index(), node_id)
     if node.assembly:
         raise SceneError("装配件节点请使用实例覆盖或原件编辑接口")
@@ -670,7 +682,7 @@ def _rematerialize_top_instance(scene: Scene, instance: AssemblyInstance, preser
 
 
 def create_assembly(scene: Scene, root_id: str, name: Optional[str] = None) -> Scene:
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     index = scene.index()
     root = _require(index, root_id)
     if root.assembly:
@@ -858,7 +870,7 @@ def instantiate_assembly(
     parent_id: Optional[str] = None,
     position=None,
 ) -> Scene:
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     if parent_id is not None:
         parent = _require(scene.index(), parent_id)
         _require_not_assembly_node(scene.index(), parent_id)
@@ -890,7 +902,7 @@ def add_nested_slot(
     position=None,
 ) -> Scene:
     """在原件的某个部件下放入另一个装配件的引用（嵌套）。"""
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     definition = _assembly_index(scene).get(parent_definition_id)
     if not definition:
         raise SceneError("装配件原件不存在")
@@ -934,7 +946,7 @@ def _locate_template(scene: Scene, node: Node):
 def update_assembly_instance_transform(scene, node_id, position=None, rotation_euler=None, scale=None):
     from .transforms import quat_from_euler_xyz
 
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     node = _require(scene.index(), node_id)
     if not node.assembly:
         return update_transform(scene, node_id, position, rotation_euler, scale)
@@ -959,7 +971,7 @@ def update_assembly_instance_transform(scene, node_id, position=None, rotation_e
 def set_assembly_override(scene, node_id, position=None, rotation_euler=None, scale=None):
     from .transforms import quat_from_euler_xyz
 
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     node = _require(scene.index(), node_id)
     if not node.assembly:
         raise SceneError("只有装配件实例零件能设置覆盖")
@@ -981,7 +993,7 @@ def set_assembly_override(scene, node_id, position=None, rotation_euler=None, sc
 
 
 def clear_assembly_override(scene, node_id):
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     node = _require(scene.index(), node_id)
     if not node.assembly:
         raise SceneError("只有装配件实例零件能清除覆盖")
@@ -998,7 +1010,7 @@ def update_assembly_template_transform(scene, node_id, position=None, rotation_e
     """编辑原件：仅提升原件版本并生成快照；实例保持在旧版本，由用户预览后选择更新。"""
     from .transforms import quat_from_euler_xyz
 
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     node = _require(scene.index(), node_id)
     if not node.assembly:
         raise SceneError("请在装配件实例节点上编辑原件")
@@ -1044,7 +1056,7 @@ def reparent_assembly_template(scene, node_id, new_parent_node_id, keep_world_tr
     if template_id in definition.root_ids and new_template_parent_id is not None:
         raise SceneError("装配件原件根不能成为另一个零件的子级")
 
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     live_def = next(d for d in scene.assembly_defs if d.id == definition.id)
     tpl = next(n for n in live_def.nodes if n.id == template_id)
     if tpl.parent_id == new_template_parent_id:
@@ -1160,7 +1172,7 @@ def _instance_change_info(scene, instance, old_def, new_def):
 
 def assembly_update_preview(scene: Scene, assembly_id: Optional[str] = None):
     """返回落后于当前原件的所有（含嵌套）实例及逐项差异。只读：放弃则现场不变。"""
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     targets = {assembly_id} if assembly_id else {d.id for d in scene.assembly_defs}
     results = []
     for instance, top, path in _all_instances(scene):
@@ -1219,7 +1231,7 @@ def apply_assembly_update(
     drop_removed=True 时，原件中消失的部件/嵌套子装配件一并删除，
     否则它们作为失去对应关系的普通节点保留在实例内。
     """
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     override_choices = override_choices or {}
     new_def = _assembly_index(scene).get(assembly_id)
     if not new_def:
@@ -1494,7 +1506,7 @@ def reparent(
                 raise SceneError("不能单独移动装配件内部零件；请移动装配件根节点或先脱离原件")
             nested_root_info = (inst, found[1])
 
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     index = scene.index()
     node = _require(index, node_id)
     if new_parent_id is not None:
@@ -1572,7 +1584,7 @@ def duplicate_subtree(scene: Scene, node_id: str) -> Scene:
                 raise SceneError("不能复制装配件内部零件；请复制装配件根节点或先脱离原件")
             if inst.parent_instance_id is not None:
                 raise SceneError("嵌套装配件请在外层原件中复制槽位，或先脱离外层原件")
-            scene = scene.model_copy(deep=True)
+            scene = _clone_scene(scene)
             source_top = next(i for i in scene.assembly_instances if i.id == top.id)
             definition = _definition_at(scene, source_top.assembly_id, source_top.pinned_version)
             existing = {n.id for n in scene.nodes}
@@ -1594,7 +1606,7 @@ def duplicate_subtree(scene: Scene, node_id: str) -> Scene:
             _materialize(scene, copied, definition, copied.parent_id, existing, nested_state=state)
             return scene
 
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     index = scene.index()
     _require(index, node_id)
     ids = subtree_ids(index, node_id)
@@ -1624,7 +1636,7 @@ def duplicate_subtree(scene: Scene, node_id: str) -> Scene:
 
 
 def delete_subtree(scene: Scene, node_id: str) -> Scene:
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     index = scene.index()
     node = _require(index, node_id)
     if node.assembly:
@@ -1651,7 +1663,7 @@ def delete_subtree(scene: Scene, node_id: str) -> Scene:
 
 def detach_assembly_instance(scene: Scene, node_id: str) -> Scene:
     """脱离后实例节点成为普通节点（嵌套时保留为外层内的普通子树），永不重新关联。"""
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     node = _require(scene.index(), node_id)
     if not node.assembly:
         return scene
@@ -1680,7 +1692,7 @@ def detach_assembly_instance(scene: Scene, node_id: str) -> Scene:
 
 def delete_assembly_definition(scene: Scene, assembly_id: str) -> Scene:
     """删除原件：顶层实例脱离；被其他原件嵌套引用的槽也转为保留的普通子树。"""
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     definition = _assembly_index(scene).get(assembly_id)
     if not definition:
         raise SceneError("装配件原件不存在")
@@ -1833,7 +1845,7 @@ def publish_release(scene: Scene, name: Optional[str] = None, note: Optional[str
     冻结内容：各层子装配钉住的具体版本、实例覆盖、脱离槽现场；
     同时把用到的原件版本整体拷入发布快照，原件之后的更新不会混入。
     """
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     if not scene.assembly_instances:
         raise SceneError("场景中没有装配件实例，没有可发布的总成")
     states = [_capture_release_state(scene, inst) for inst in scene.assembly_instances]
@@ -1890,6 +1902,24 @@ def _ensure_release_versions(scene: Scene, release: ReleaseSnapshot, upgrades: D
         raise SceneError("装配件版本不可用，已保留现场、未用最新版本代替：" + "；".join(missing))
     for key, definition in frozen.items():
         if _definition_at(scene, key[0], key[1]) is None:
+            scene.assembly_history.append(definition.model_copy(deep=True))
+
+
+def _ensure_batch_versions(
+    scene: Scene,
+    release: ReleaseSnapshot,
+    instance_ids: List[str],
+    instance_targets: Dict[str, Dict[str, int]],
+) -> None:
+    """只注入本批实例重建所需、且现场缺失的冻结原件版本。
+
+    与整发布重开不同：未选入本批、或已被模拟为不可用的旧版本不会被强制恢复；
+    候选版本来自现场原件/历史，发布快照只负责它仍然持有的冻结版本。
+    """
+    required = _batch_required_versions(release, instance_ids, instance_targets)
+    frozen = _release_def_map(release)
+    for key, definition in frozen.items():
+        if key in required and _definition_at(scene, key[0], key[1]) is None:
             scene.assembly_history.append(definition.model_copy(deep=True))
 
 
@@ -1989,7 +2019,7 @@ def open_release(scene: Scene, release_id: str) -> Scene:
     只替换发布快照中记录过的实例（保持实例 id 不变，选中引用仍可追溯），
     场景里的其他内容不动；任一锁定版本不可用则整体放弃并保留现场。
     """
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     release = _require_release(scene, release_id)
     _ensure_release_versions(scene, release, {})
     recorded = {state.instance_id for state in release.instances}
@@ -2010,7 +2040,7 @@ def derive_release(scene: Scene, release_id: str, upgrades: Optional[Dict[str, i
     通过 derived_from / source_instance_id 记录来源。
     """
     upgrades = upgrades or {}
-    scene = scene.model_copy(deep=True)
+    scene = _clone_scene(scene)
     release = _require_release(scene, release_id)
     _ensure_release_versions(scene, release, upgrades)
     for state in release.instances:
@@ -2099,3 +2129,452 @@ def release_derive_preview(scene: Scene, release_id: str, upgrades: Optional[Dic
     for state in release.instances:
         walk(state, state.name)
     return {"items": items, "kept": list(kept.values()), "missing": missing}
+
+
+# ---------------------------------------------------------------------------
+# 分批升级：同一发布总成的多个实例分别选择保留旧版 / 采用候选版，
+# 按批次确认；撤回某批只回退该批，其余已确认批次不回退。
+# ---------------------------------------------------------------------------
+
+
+def _release_state_for_id(release: ReleaseSnapshot, instance_id: str) -> Optional[ReleaseInstanceState]:
+    """在发布快照（含嵌套层）中按实例 id 找到冻结状态。"""
+    for state in release.instances:
+        if state.instance_id == instance_id:
+            return state
+
+        def find(states: List[ReleaseInstanceState]) -> Optional[ReleaseInstanceState]:
+            for child in states:
+                if child.instance_id == instance_id:
+                    return child
+                found = find(child.nested)
+                if found is not None:
+                    return found
+            return None
+
+        found = find(state.nested)
+        if found is not None:
+            return found
+    return None
+
+
+def _batch_required_versions(
+    release: ReleaseSnapshot,
+    instance_ids: List[str],
+    instance_targets: Dict[str, Dict[str, int]],
+) -> Dict[tuple, List[str]]:
+    """本批选定实例所需的 {(assembly_id, version): [实例名]}。"""
+    wanted = set(instance_ids)
+    targets_default = {}
+    result: Dict[tuple, List[str]] = {}
+
+    def walk(state: ReleaseInstanceState, per_inst: Dict[str, int], label: str, wanted_here: bool) -> None:
+        if wanted_here:
+            version = per_inst.get(state.assembly_id, state.pinned_version)
+            result.setdefault((state.assembly_id, version), []).append(label)
+        for child in state.nested:
+            walk(child, per_inst, f"{label} / {child.slot_key or child.instance_id}", wanted_here)
+
+    for state in release.instances:
+        if state.instance_id not in wanted:
+            continue
+        walk(state, instance_targets.get(state.instance_id, {}), state.name, True)
+    return result
+
+
+def _check_batch_versions(
+    scene: Scene,
+    release: ReleaseSnapshot,
+    instance_ids: List[str],
+    instance_targets: Dict[str, Dict[str, int]],
+) -> List[dict]:
+    """校验本批所需版本是否可用，返回缺失列表（含受影响实例与原因），不修改场景。"""
+    missing: List[dict] = []
+    required = _batch_required_versions(release, instance_ids, instance_targets)
+    for (assembly_id, version), names in sorted(required.items()):
+        if _definition_at(scene, assembly_id, version) is not None:
+            continue
+        # 发布时锁定的版本即使现场历史已丢失，也可由发布快照自身恢复
+        if (assembly_id, version) in _release_def_map(release):
+            continue
+        missing.append(
+            {
+                "assembly_id": assembly_id,
+                "assembly_name": _assembly_name(scene, assembly_id),
+                "version": version,
+                "instance_names": names,
+                "reason": f"{_assembly_name(scene, assembly_id)} v{version} 已不可用",
+            }
+        )
+    return missing
+
+
+def release_batch_preview(
+    scene: Scene,
+    release_id: str,
+    instance_ids: List[str],
+    instance_targets: Optional[Dict[str, Dict[str, int]]] = None,
+):
+    """分批升级预览：逐实例说明覆盖值、被删部件、选中引用如何受影响。只读。"""
+    instance_targets = instance_targets or {}
+    scene = _clone_scene(scene)
+    release = _require_release(scene, release_id)
+    wanted = set(instance_ids)
+    frozen = _release_def_map(release)
+
+    def def_at(assembly_id: str, version: int) -> Optional[AssemblyDefinition]:
+        return frozen.get((assembly_id, version)) or _definition_at(scene, assembly_id, version)
+
+    items: List[dict] = []
+    kept: List[dict] = []
+    missing = _check_batch_versions(scene, release, instance_ids, instance_targets)
+
+    def walk(
+        state: ReleaseInstanceState,
+        per_inst: Dict[str, int],
+        label: str,
+        path: List[str],
+        top_id: str,
+    ) -> None:
+        target = per_inst.get(state.assembly_id, state.pinned_version)
+        old_def = def_at(state.assembly_id, state.pinned_version)
+        new_def = def_at(state.assembly_id, target)
+        if old_def is None or new_def is None:
+            return  # 缺失已在 missing 中列出
+        child_path = path
+        if target != state.pinned_version:
+            info = _instance_change_info(scene, _pseudo_instance(state), old_def, new_def)
+            override_effects = []
+            old_index = {n.id: n for n in old_def.nodes}
+            new_index = {n.id: n for n in new_def.nodes}
+            new_paths = _template_paths(new_def)
+            old_paths = _template_paths(old_def)
+            for tid, override in state.overrides.items():
+                if tid not in new_index:
+                    fate = "部件已删除：覆盖随部件一并保留为普通节点，不再链接原件"
+                elif tid not in old_index:
+                    fate = "旧版无此部件"
+                else:
+                    base_changed = (
+                        not _transform_equal(old_index[tid].transform, new_index[tid].transform)
+                        or old_index[tid].parent_id != new_index[tid].parent_id
+                    )
+                    fate = "本实例覆盖继续生效，叠加在候选版之上" if not base_changed else (
+                        "本实例覆盖继续生效，会遮盖候选版对该部件的上游变化"
+                    )
+                override_effects.append(
+                    {
+                        "template_id": tid,
+                        "path": new_paths.get(tid, old_paths.get(tid, tid)),
+                        "position": override.position,
+                        "rotation": override.rotation,
+                        "scale": override.scale,
+                        "effect": fate,
+                    }
+                )
+            items.append(
+                {
+                    "top_instance_id": top_id,
+                    "instance_id": state.instance_id,
+                    "instance_name": label,
+                    "path": child_path,
+                    "assembly_id": state.assembly_id,
+                    "assembly_name": new_def.name,
+                    "from_version": state.pinned_version,
+                    "to_version": target,
+                    "overrides": override_effects,
+                    "selection_refs": [
+                        {
+                            "top_instance_id": top_id,
+                            "path": child_path,
+                            "template_id": change["template_id"],
+                            "effect": "部件在候选版中被删除：选中引用无法再解析，需改选保留下来的普通节点",
+                        }
+                        for change in info["removed"]
+                    ],
+                    **info,
+                }
+            )
+        else:
+            kept.append(
+                {
+                    "top_instance_id": top_id,
+                    "instance_id": state.instance_id,
+                    "assembly_id": state.assembly_id,
+                    "assembly_name": old_def.name,
+                    "version": state.pinned_version,
+                }
+            )
+        for child in state.nested:
+            walk(
+                child,
+                per_inst,
+                f"{label} / {child.slot_key or child.instance_id}",
+                child_path + [child.slot_key or child.instance_id],
+                top_id,
+            )
+
+    for state in release.instances:
+        if state.instance_id in wanted:
+            walk(state, instance_targets.get(state.instance_id, {}), state.name, [], state.instance_id)
+    # 发布快照中未被本批选中的顶层实例仍保持原版本，逐一列出以便界面说明
+    not_in_batch = [
+        {"instance_id": state.instance_id, "instance_name": state.name}
+        for state in release.instances
+        if state.instance_id not in wanted
+    ]
+    return {
+        "items": items,
+        "kept": kept,
+        "missing": missing,
+        "not_in_batch": not_in_batch,
+    }
+
+
+def _remove_recorded_top(scene: Scene, instance_id: str) -> None:
+    top = next((item for item in scene.assembly_instances if item.id == instance_id), None)
+    if top is not None:
+        _remove_instance_nodes(scene, top)
+        scene.assembly_instances = [item for item in scene.assembly_instances if item.id != instance_id]
+
+
+def _build_batch_nested_state(
+    scene: Scene,
+    release: ReleaseSnapshot,
+    live: Optional[AssemblyInstance],
+    frozen_state: ReleaseInstanceState,
+    targets: Dict[str, int],
+) -> dict:
+    """构造 _materialize 需要的嵌套状态，并收集候选版中消失部件/槽的保留子树。"""
+    frozen = _release_def_map(release)
+
+    def def_at(assembly_id: str, version: int) -> Optional[AssemblyDefinition]:
+        return frozen.get((assembly_id, version)) or _definition_at(scene, assembly_id, version)
+
+    target = targets.get(frozen_state.assembly_id, frozen_state.pinned_version)
+    old_def = def_at(frozen_state.assembly_id, frozen_state.pinned_version)
+    new_def = def_at(frozen_state.assembly_id, target)
+    state: dict = {
+        "transform": frozen_state.transform.model_copy(deep=True),
+        "overrides": {k: v.model_copy(deep=True) for k, v in frozen_state.overrides.items()},
+        "pinned_version": target,
+        "detached_slots": {},
+        "preserved": {},
+        "nested_state": {},
+    }
+    if old_def is None or new_def is None:
+        return state
+    new_templates = {n.id for n in new_def.nodes}
+    new_slots = {s.key for s in new_def.slots}
+    preserved: Dict[str, List[str]] = {}
+    if live is not None and target != frozen_state.pinned_version:
+        for tid, nid in live.node_map.items():
+            if tid == ROOT_KEY:
+                continue
+            if tid not in new_templates:
+                preserved[tid] = _subtree_root_ids(scene, [nid])
+        for slot in old_def.slots:
+            if slot.key in new_slots:
+                continue
+            child_live = next(
+                (c for c in live.nested_instances if c.slot_key == slot.key), None
+            )
+            if child_live is not None:
+                root_id = child_live.node_map.get(ROOT_KEY)
+                if root_id:
+                    preserved[slot.key] = _subtree_root_ids(scene, [root_id])
+            elif slot.key in live.detached_slots:
+                preserved[slot.key] = list(live.detached_slots[slot.key].node_ids)
+    # 发布时已脱离的槽由 _attach_release_detached 处理，不进 preserved
+    state["preserved"] = preserved
+    nested_state: Dict[str, dict] = {}
+    for child_frozen in frozen_state.nested:
+        child_live = None
+        if live is not None:
+            child_live = next(
+                (c for c in live.nested_instances if c.slot_key == child_frozen.slot_key),
+                None,
+            )
+        nested_state[child_frozen.slot_key] = _build_batch_nested_state(
+            scene, release, child_live, child_frozen, targets
+        )
+    state["nested_state"] = nested_state
+    return state
+
+
+def confirm_release_batch(
+    scene: Scene,
+    release_id: str,
+    instance_ids: List[str],
+    instance_targets: Optional[Dict[str, Dict[str, int]]] = None,
+    batch_name: Optional[str] = None,
+) -> Scene:
+    """确认一批实例的升级选择；未确认的实例保持原版本，互不影响。"""
+    instance_targets = instance_targets or {}
+    scene = _clone_scene(scene)
+    release = _require_release(scene, release_id)
+    wanted = set(instance_ids)
+    recorded = {state.instance_id for state in release.instances}
+    unknown = wanted - recorded
+    if unknown:
+        raise SceneError(f"发布快照中没有这些实例，无法分批升级：{'、'.join(sorted(unknown))}")
+    # 检查本批实例重建所需的每个版本（含保留旧版的层）是否仍可获得
+    missing = _check_batch_versions(scene, release, instance_ids, instance_targets)
+    if missing:
+        detail = "；".join(
+            f"实例 {'、'.join(m['instance_names'])} 需要 {m['assembly_name']} v{m['version']}（{m['reason']}）"
+            for m in missing
+        )
+        raise SceneError("装配件版本不可用，已保留现场、未用最新版本代替：" + detail)
+    _ensure_batch_versions(scene, release, instance_ids, instance_targets)
+
+    existing_ids = {r.id for r in scene.releases} | {b.batch_id for b in scene.release_batches}
+    batch_id = _new_id(existing_ids)
+    # 确认前先冻结本批各实例的当前现场（撤回时恢复到该批确认前的样子）
+    before_states = []
+    live_tops: Dict[str, Optional[AssemblyInstance]] = {}
+    for instance_id in sorted(wanted):
+        top = next((item for item in scene.assembly_instances if item.id == instance_id), None)
+        live_tops[instance_id] = top
+        if top is not None:
+            before_states.append(_capture_release_state(scene, top))
+        else:
+            # 该实例此前已被其它操作移除：用发布快照原始状态作为还原点
+            state = _release_state_for_id(release, instance_id)
+            if state is not None:
+                before_states.append(state.model_copy(deep=True))
+
+    for instance_id in sorted(wanted):
+        state = _release_state_for_id(release, instance_id)
+        if state is None:
+            continue
+        live_top = live_tops.get(instance_id)
+        # 先基于现场收集候选版中消失部件/槽的保留子树（删除实例前做，引用仍有效）
+        batch_state = _build_batch_nested_state(
+            scene, release, live_top, state, instance_targets.get(instance_id, {})
+        )
+        keep_ids = _state_keep_ids(batch_state)
+        keep_ids.update(_all_detached_ids(live_top)) if live_top is not None else None
+        old_top = next((i for i in scene.assembly_instances if i.id == instance_id), None)
+        if old_top is not None:
+            _remove_instance_nodes(scene, old_top, keep=keep_ids)
+            scene.assembly_instances = [i for i in scene.assembly_instances if i.id != instance_id]
+        target_version = instance_targets.get(instance_id, {}).get(
+            state.assembly_id, state.pinned_version
+        )
+        definition = _definition_at(scene, state.assembly_id, target_version)
+        if definition is None:
+            raise SceneError(
+                f"装配件版本不可用：{_assembly_name(scene, state.assembly_id)} v{target_version}"
+            )
+        parent_id = state.parent_id if state.parent_id in scene.index() else None
+        new_top = AssemblyInstance(
+            id=instance_id,
+            name=state.name,
+            assembly_id=state.assembly_id,
+            assembly_version=target_version,
+            pinned_version=target_version,
+            parent_id=parent_id,
+            transform=state.transform.model_copy(deep=True),
+            overrides={k: v.model_copy(deep=True) for k, v in state.overrides.items()},
+        )
+        scene.assembly_instances.append(new_top)
+        existing = {n.id for n in scene.nodes}
+        for item, _, _ in _all_instances(scene):
+            existing.add(item.id)
+        _materialize(
+            scene,
+            new_top,
+            definition,
+            parent_id,
+            existing,
+            preserved=batch_state.get("preserved") or {},
+            nested_state=batch_state.get("nested_state") or {},
+        )
+        _attach_release_detached(scene, new_top, state, definition, existing)
+
+    decision = ReleaseBatchDecision(
+        batch_id=batch_id,
+        name=batch_name or f"批次 {len(scene.release_batches) + 1}",
+        created_at=time.time(),
+        release_id=release_id,
+        instance_targets={k: dict(v) for k, v in instance_targets.items() if k in wanted},
+    )
+    # 决策只记录本批；instance_targets 里不属于本批的条目不带入，两批互不带走选择
+    decision.instance_targets = {
+        top_id: dict(targets)
+        for top_id, targets in decision.instance_targets.items()
+        if top_id in wanted
+    }
+    batch = ReleaseBatch(
+        batch_id=batch_id,
+        name=decision.name,
+        release_id=release_id,
+        created_at=decision.created_at,
+        instances=before_states,
+    )
+    scene.release_batch_decisions = [d for d in scene.release_batch_decisions if d.batch_id != batch_id]
+    scene.release_batch_decisions.append(decision)
+    scene.release_batches.append(batch)
+    return scene
+
+
+def withdraw_release_batch(scene: Scene, batch_id: str) -> Scene:
+    """撤回某一批的决定：只还原该批自己的版本与覆盖，其余已确认批次不回退。"""
+    scene = _clone_scene(scene)
+    batch = next((b for b in scene.release_batches if b.batch_id == batch_id), None)
+    decision = next((d for d in scene.release_batch_decisions if d.batch_id == batch_id), None)
+    if batch is None or decision is None:
+        raise SceneError("批次不存在或已撤回")
+    release = next((r for r in scene.releases if r.id == batch.release_id), None)
+    if release is None:
+        raise SceneError("批次对应的发布版本不存在，无法撤回")
+    withdraw_ids = [state.instance_id for state in batch.instances]
+    missing = _check_batch_versions(scene, release, withdraw_ids, {})
+    if missing:
+        detail = "；".join(
+            f"实例 {'、'.join(m['instance_names'])} 撤回后需要 {m['assembly_name']} v{m['version']}（{m['reason']}）"
+            for m in missing
+        )
+        raise SceneError("缺少原版本，无法撤回该批，已保留现场及其他批次：" + detail)
+    _ensure_batch_versions(scene, release, withdraw_ids, {})
+    for state in batch.instances:
+        _remove_recorded_top(scene, state.instance_id)
+        parent_id = state.parent_id if state.parent_id in scene.index() else None
+        _spawn_from_state(scene, state, {}, reuse_id=state.instance_id, parent_id=parent_id)
+    scene.release_batches = [b for b in scene.release_batches if b.batch_id != batch_id]
+    scene.release_batch_decisions = [d for d in scene.release_batch_decisions if d.batch_id != batch_id]
+    return scene
+
+
+def release_batch_status(scene: Scene, release_id: str) -> dict:
+    """从保存记录继续时，返回发布来源与各批次决定，便于界面还原现场说明。"""
+    release = _require_release(scene, release_id)
+    decisions = [d for d in scene.release_batch_decisions if d.release_id == release_id]
+    batches = [b for b in scene.release_batches if b.release_id == release_id]
+    confirmed_ids = {iid for b in batches for iid in {s.instance_id for s in b.instances}}
+    per_instance = []
+    for state in release.instances:
+        live = next((i for i in scene.assembly_instances if i.id == state.instance_id), None)
+        latest_decision = next(
+            (d for d in reversed(decisions) if state.instance_id in d.instance_targets), None
+        )
+        per_instance.append(
+            {
+                "instance_id": state.instance_id,
+                "instance_name": state.name,
+                "released_version": state.pinned_version,
+                "live_version": live.pinned_version if live else None,
+                "confirmed": state.instance_id in confirmed_ids,
+                "last_batch_id": latest_decision.batch_id if latest_decision else None,
+                "last_batch_name": latest_decision.name if latest_decision else None,
+            }
+        )
+    return {
+        "release_id": release_id,
+        "release_name": release.name,
+        "batches": [
+            {"batch_id": b.batch_id, "name": b.name, "created_at": b.created_at} for b in batches
+        ],
+        "instances": per_instance,
+    }

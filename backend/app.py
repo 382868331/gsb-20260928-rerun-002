@@ -19,6 +19,9 @@ from .models import (
     AssemblyUpdateApplyRequest,
     AssemblyUpdatePreviewRequest,
     AssemblyTemplateReparentRequest,
+    BatchUpgradeConfirmRequest,
+    BatchUpgradePreviewRequest,
+    BatchWithdrawRequest,
     CreateAssemblyRequest,
     DeriveReleaseRequest,
     IdRequest,
@@ -209,6 +212,41 @@ async def op_release_derive(req: DeriveReleaseRequest):
 async def op_release_derive_preview(req: DeriveReleaseRequest):
     try:
         return scene_ops.release_derive_preview(req.scene, req.release_id, req.upgrades)
+    except scene_ops.SceneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ops/release/batch-preview")
+async def op_release_batch_preview(req: BatchUpgradePreviewRequest):
+    try:
+        return scene_ops.release_batch_preview(
+            req.scene, req.release_id, req.instance_ids, req.instance_targets
+        )
+    except scene_ops.SceneError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/ops/release/batch-confirm")
+async def op_release_batch_confirm(req: BatchUpgradeConfirmRequest):
+    return _run(
+        scene_ops.confirm_release_batch,
+        req.scene,
+        req.release_id,
+        req.instance_ids,
+        req.instance_targets,
+        req.batch_name,
+    )
+
+
+@app.post("/api/ops/release/batch-withdraw")
+async def op_release_batch_withdraw(req: BatchWithdrawRequest):
+    return _run(scene_ops.withdraw_release_batch, req.scene, req.batch_id)
+
+
+@app.post("/api/ops/release/batch-status")
+async def op_release_batch_status(req: ReleaseRequest):
+    try:
+        return scene_ops.release_batch_status(req.scene, req.release_id)
     except scene_ops.SceneError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

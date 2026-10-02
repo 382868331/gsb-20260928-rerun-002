@@ -110,6 +110,31 @@ class ReleaseSnapshot(BaseModel):
     created_at: float = 0.0
     definitions: List[AssemblyDefinition] = Field(default_factory=list)
     instances: List[ReleaseInstanceState] = Field(default_factory=list)
+
+
+class ReleaseBatchDecision(BaseModel):
+    """分批升级中一个批次对若干实例（按槽路径定位）做出的版本/覆盖决定。
+
+    每个顶层实例独立决定；同批两实例共用的嵌套子装配分别记录，互不带走选择。
+    """
+
+    batch_id: str
+    name: str
+    created_at: float = 0.0
+    release_id: str
+    # {顶层实例 id: {装配件 id: 目标版本}}；未列出的装配件保持发布时旧版
+    instance_targets: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class ReleaseBatch(BaseModel):
+    """一次批次确认的结果快照：确认升级了哪些顶层实例及其当时的覆盖。"""
+
+    batch_id: str
+    name: str
+    release_id: str
+    created_at: float = 0.0
+    # 确认时各顶层实例冻结的状态（与 ReleaseInstanceState 同构），撤回时按此还原
+    instances: List[ReleaseInstanceState] = Field(default_factory=list)
 class SelectionRef(BaseModel):
     """稳定的选中对象引用：刷新重生成节点 id 后仍能定位同一部件。"""
 
@@ -127,6 +152,9 @@ class Scene(BaseModel):
     assembly_instances: List[AssemblyInstance] = Field(default_factory=list)
     assembly_history: List[AssemblyDefinition] = Field(default_factory=list)
     releases: List[ReleaseSnapshot] = Field(default_factory=list)
+    # 分批升级：进行中的批次决定（按批次保存，撤回只影响本批）与已确认批次
+    release_batch_decisions: List[ReleaseBatchDecision] = Field(default_factory=list)
+    release_batches: List[ReleaseBatch] = Field(default_factory=list)
     selection: Optional[SelectionRef] = None
 
     def index(self) -> dict:
@@ -224,6 +252,28 @@ class DeriveReleaseRequest(BaseModel):
     release_id: str
     # {assembly_id: 目标版本}；未列出的装配件保持发布时钉住的旧版本
     upgrades: dict[str, int] = Field(default_factory=dict)
+
+
+class BatchUpgradePreviewRequest(BaseModel):
+    scene: Scene
+    release_id: str
+    # 本批次涉及的顶层实例 id（同一发布总成的多个实例可分批选择）
+    instance_ids: List[str] = Field(default_factory=list)
+    # {顶层实例 id: {装配件 id: 目标版本}}；按实例分别选择旧版/候选版
+    instance_targets: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class BatchUpgradeConfirmRequest(BaseModel):
+    scene: Scene
+    release_id: str
+    batch_name: Optional[str] = None
+    instance_ids: List[str] = Field(default_factory=list)
+    instance_targets: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class BatchWithdrawRequest(BaseModel):
+    scene: Scene
+    batch_id: str
 
 
 class SceneId(BaseModel):

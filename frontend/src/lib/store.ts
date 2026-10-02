@@ -3,6 +3,8 @@ import * as THREE from "three";
 import { api } from "./api";
 import type {
   AssemblyUpdatePreview,
+  ReleaseBatchPreview,
+  ReleaseBatchStatus,
   ReleaseDerivePreview,
   Scene,
   SceneNode,
@@ -131,6 +133,19 @@ interface State {
     releaseId: string,
     upgrades: Record<string, number>
   ) => Promise<ReleaseDerivePreview>;
+  fetchBatchPreview: (
+    releaseId: string,
+    instanceIds: string[],
+    instanceTargets: Record<string, Record<string, number>>
+  ) => Promise<ReleaseBatchPreview>;
+  confirmBatchUpgrade: (
+    releaseId: string,
+    instanceIds: string[],
+    instanceTargets: Record<string, Record<string, number>>,
+    batchName?: string
+  ) => Promise<void>;
+  withdrawBatch: (batchId: string) => Promise<void>;
+  fetchBatchStatus: (releaseId: string) => Promise<ReleaseBatchStatus>;
   applyAssemblyUpdate: (
     assemblyId: string,
     choices: {
@@ -188,11 +203,17 @@ export const useStore = create<State>((set, get) => {
     pendingUpdates: [],
 
     async init() {
-      const list = await api.listScenes().catch(() => ({ scenes: [] }));
-      if (list.scenes.length > 0) {
-        await get().loadScene(list.scenes[0].scene_id);
-      } else {
-        await get().newScene();
+      try {
+        const list = await api.listScenes().catch(() => ({ scenes: [] }));
+        if (list.scenes.length > 0) {
+          await get().loadScene(list.scenes[0].scene_id);
+        } else {
+          await get().newScene();
+        }
+      } catch (err) {
+        // 读取失败绝不把现场清空：保留当前场景（可能为空骨架）并给出可解释错误，
+        // 用户仍可在界面上重试打开或新建，已保存内容不会被空场景覆盖保存。
+        set({ busy: null, error: "场景读取失败：" + (err as Error).message });
       }
     },
 
@@ -213,21 +234,34 @@ export const useStore = create<State>((set, get) => {
     },
 
     async loadScene(id) {
-      const { scene: loaded } = await api.loadScene(id);
-      const scene = withAssemblyCollections(loaded);
-      const selectedId = resolveSelectionRef(scene, scene.selection ?? null);
-      set({
-        sceneId: id,
-        scene,
-        past: [],
-        future: [],
-        selectedId,
-        dirty: false,
-        error: null,
-        assemblyEditMode: "override",
-        pendingUpdates: [],
-      });
-      await get().refreshWorld();
+      const previous = get();
+      set({ busy: "加载中…", error: null });
+      try {
+        const { scene: loaded } = await api.loadScene(id);
+        const scene = withAssemblyCollections(loaded);
+        const selectedId = resolveSelectionRef(scene, scene.selection ?? null);
+        set({
+          sceneId: id,
+          scene,
+          past: [],
+          future: [],
+          selectedId,
+          dirty: false,
+          error: null,
+          busy: null,
+          assemblyEditMode: "override",
+          pendingUpdates: [],
+        });
+        await get().refreshWorld();
+      } catch (err) {
+        // 保留原选择与现场，仅展示错误；切换下拉框的尝试不覆盖任何已保存文档。
+        set({
+          busy: null,
+          error: `场景「${id}」读取失败：${(err as Error).message}（已保留当前现场，未覆盖保存内容）`,
+          sceneId: previous.sceneId,
+          selectedId: previous.selectedId,
+        });
+      }
     },
 
     async save() {
@@ -480,6 +514,28 @@ export const useStore = create<State>((set, get) => {
     async fetchDerivePreview(releaseId, upgrades) {
       const { scene } = get();
       return api.releaseDerivePreview(scene, releaseId, upgrades);
+    },
+
+    async fetchBatchPreview(releaseId, instanceIds, instanceTargets) {
+      const { scene } = get();
+      return api.releaseBatchPreview(scene, releaseId, instanceIds, instanceTargets);
+    },
+
+    async confirmBatchUpgrade(releaseId, instanceIds, instanceTargets, batchName) {
+      const { scene } = get();
+      await commit(
+        api.releaseBatchConfirm(scene, releaseId, instanceIds, instanceTargets, batchName)
+      );
+    },
+
+    async withdrawBatch(batchId) {
+      const { scene } = get();
+      await commit(api.releaseBatchWithdraw(scene, batchId));
+    },
+
+    async fetchBatchStatus(releaseId) {
+      const { scene } = get();
+      return api.releaseBatchStatus(scene, releaseId);
     },
 
     async applyAssemblyUpdate(assemblyId, choices) {

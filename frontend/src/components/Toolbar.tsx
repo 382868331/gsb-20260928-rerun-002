@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../lib/store";
 import { PRIMITIVE_TYPES, type ReleaseDerivePreview, type ReleaseSnapshot } from "../lib/types";
+import { BatchDialog } from "./BatchDialog";
 import { api, type SceneMeta } from "../lib/api";
 
 const LABELS: Record<string, string> = {
@@ -37,20 +38,25 @@ export function Toolbar() {
   const pendingUpdates = useStore((s) => s.pendingUpdates);
   const setPendingUpdates = useStore((s) => s.setPendingUpdates);
   const applyAssemblyUpdate = useStore((s) => s.applyAssemblyUpdate);
-  const releases = useStore((s) => s.scene.releases ?? []);
-  const assemblyHistory = useStore((s) => s.scene.assembly_history ?? []);
+  const releases = useStore((s) => s.scene.releases) ?? [];
+  const assemblyHistory = useStore((s) => s.scene.assembly_history) ?? [];
   const publishRelease = useStore((s) => s.publishRelease);
   const openRelease = useStore((s) => s.openRelease);
   const deriveRelease = useStore((s) => s.deriveRelease);
   const fetchDerivePreview = useStore((s) => s.fetchDerivePreview);
+  const confirmBatchUpgrade = useStore((s) => s.confirmBatchUpgrade);
+  const fetchBatchPreview = useStore((s) => s.fetchBatchPreview);
+  const withdrawBatch = useStore((s) => s.withdrawBatch);
+  const fetchBatchStatus = useStore((s) => s.fetchBatchStatus);
   const hasInstances = useStore((s) => s.scene.assembly_instances.length > 0);
-  const selectedNode = useStore((s) =>
-    s.scene.nodes.find((n) => n.id === s.selectedId) ?? null
-  );
+  const liveInstances = useStore((s) => s.scene.assembly_instances);
+  const nodes = useStore((s) => s.scene.nodes);
+  const selectedNode = nodes.find((n) => n.id === selectedId) ?? null;
   const [assemblyChoice, setAssemblyChoice] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [releaseChoice, setReleaseChoice] = useState("");
   const [deriving, setDeriving] = useState<ReleaseSnapshot | null>(null);
+  const [batching, setBatching] = useState<ReleaseSnapshot | null>(null);
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -185,6 +191,16 @@ export function Toolbar() {
         >
           派生…
         </button>
+        <button
+          disabled={!releaseChoice}
+          title="按使用批次分批采用子装配升级：同批各实例可分别选择保留旧版或采用候选版"
+          onClick={() => {
+            const release = releases.find((item) => item.id === releaseChoice);
+            if (release) setBatching(release);
+          }}
+        >
+          分批升级…
+        </button>
       </div>
       <div className="spacer" />
       <select
@@ -227,6 +243,24 @@ export function Toolbar() {
             setDeriving(null);
           }}
           onClose={() => setDeriving(null)}
+        />
+      )}
+      {batching && (
+        <BatchDialog
+          release={batching}
+          currentDefs={assemblies}
+          history={assemblyHistory}
+          liveInstances={liveInstances}
+          onPreview={(instanceIds, targets) =>
+            fetchBatchPreview(batching.id, instanceIds, targets)
+          }
+          onApply={async (instanceIds, targets, batchName) => {
+            await confirmBatchUpgrade(batching.id, instanceIds, targets, batchName);
+            setBatching(null);
+          }}
+          onWithdraw={(batchId) => withdrawBatch(batchId)}
+          onStatus={() => fetchBatchStatus(batching.id)}
+          onClose={() => setBatching(null)}
         />
       )}
     </div>

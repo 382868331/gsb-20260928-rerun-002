@@ -62,7 +62,9 @@ export function Inspector() {
   const world = useStore((s) => s.world);
   const [nestedChoice, setNestedChoice] = useState("");
 
-  const node = scene.nodes.find((n) => n.id === selectedId) ?? null;
+  const node = useStore((s) =>
+    s.scene.nodes.find((n) => n.id === s.selectedId) ?? null
+  );
   const [eulerDeg, setEulerDeg] = useState<Vec3>([0, 0, 0]);
   const [scaleDraft, setScaleDraft] = useState<Vec3>([1, 1, 1]);
 
