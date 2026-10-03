@@ -270,6 +270,7 @@ export function Toolbar() {
       {batchTarget && (
         <BatchDialog
           target={batchTarget}
+          currentDefs={assemblies}
           history={assemblyHistory}
           batches={batches}
           onPreview={(version) => fetchBatchPreview(batchTarget.assemblyId, version)}
@@ -589,6 +590,7 @@ function UpdateDialog({
 
 function BatchDialog({
   target,
+  currentDefs,
   history,
   batches,
   onPreview,
@@ -599,6 +601,7 @@ function BatchDialog({
   onClose,
 }: {
   target: { assemblyId: string; assemblyName: string; version: number };
+  currentDefs: { id: string; name: string; version: number }[];
   history: { id: string; version: number }[];
   batches: UpgradeBatch[];
   onPreview: (version: number) => Promise<BatchUpgradePreview>;
@@ -618,6 +621,7 @@ function BatchDialog({
 }) {
   const versionsOf = (assemblyId: string): number[] => {
     const set = new Set<number>();
+    for (const def of currentDefs) if (def.id === assemblyId) set.add(def.version);
     for (const def of history) if (def.id === assemblyId) set.add(def.version);
     return [...set].sort((a, b) => a - b);
   };
