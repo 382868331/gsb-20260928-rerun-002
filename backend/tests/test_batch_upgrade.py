@@ -4,6 +4,7 @@ import pytest
 
 from backend import scene_ops
 from backend.models import BatchDecision, SelectionRef
+from backend.storage import load_scene, save_scene
 from backend.tests.test_release import _bump_inner, build_nested_assemblies
 
 
@@ -149,3 +150,71 @@ def test_nested_path_is_slot_key_for_selection_refs():
         template_id=inner_part,
     )
     assert scene_ops.resolve_selection(scene, ref) == nested.node_map[inner_part]
+
+
+def test_three_instances_two_batches_reload_withdraw_then_adopt(monkeypatch, tmp_path):
+    """三个带不同覆盖的嵌套实例分两批升级；重开后撤回第一批，再采用第三个实例。"""
+    monkeypatch.setenv("SCENE_STORE_DIR", str(tmp_path))
+    scene, inner_def, outer_def, inner_part = build_nested_assemblies()
+    scene = scene_ops.instantiate_assembly(scene, outer_def.id, position=[9, 0, 0])
+    top1, top2, top3 = scene.assembly_instances
+    slot = top1.nested_instances[0].slot_key
+    nodes = [
+        t.nested_instances[0].node_map[inner_part] for t in (top1, top2, top3)
+    ]
+    scene = scene_ops.set_assembly_override(scene, nodes[0], scale=[2, 2, 2])
+    scene = scene_ops.set_assembly_override(scene, nodes[1], position=[3, 0, 0])
+    scene = scene_ops.set_assembly_override(
+        scene, nodes[2], position=[0, 4, 0], scale=[0.5, 0.5, 0.5]
+    )
+    scene = scene_ops.publish_release(scene, name="总成基线")
+    scene, inner_def = _bump_inner(scene, inner_def, inner_part, [7, 0, 0])
+
+    def do_batch(scene, top, name):
+        scene, batch = scene_ops.create_upgrade_batch(scene, inner_def.id, 2, name)
+        scene = scene_ops.save_batch_decisions(
+            scene,
+            batch.id,
+            [BatchDecision(
+                top_instance_id=top.id, path=[slot], instance_name=top.name,
+                action="upgrade",
+            )],
+        )
+        return scene_ops.confirm_upgrade_batch(scene, batch.id), batch
+
+    scene, batch1 = do_batch(scene, top1, "第一批")
+    scene, batch2 = do_batch(scene, top2, "第二批")
+
+    # 保存并重开：批次记录、实例版本与覆盖完整恢复
+    save_scene("batch-e2e", scene)
+    scene = load_scene("batch-e2e")
+    tops = {t.id: t for t in scene.assembly_instances}
+    assert tops[top1.id].nested_instances[0].pinned_version == 2
+    assert tops[top2.id].nested_instances[0].pinned_version == 2
+    assert tops[top3.id].nested_instances[0].pinned_version == 1
+
+    # 只撤回第一批：第二、三批不受影响
+    scene = scene_ops.withdraw_upgrade_batch(scene, batch1.id)
+    tops = {t.id: t for t in scene.assembly_instances}
+    assert tops[top1.id].nested_instances[0].pinned_version == 1
+    assert tops[top2.id].nested_instances[0].pinned_version == 2
+    assert tops[top3.id].nested_instances[0].pinned_version == 1
+
+    # 继续采用第三个实例
+    scene, batch3 = do_batch(scene, tops[top3.id], "第三批")
+
+    # 与独立重算的期望一致：版本、覆盖、批次来源
+    tops = {t.id: t for t in scene.assembly_instances}
+    expected_version = {top1.id: 1, top2.id: 2, top3.id: 2}
+    expected_position = {top1.id: [1.0, 0.0, 0.0], top2.id: [3.0, 0.0, 0.0], top3.id: [0.0, 4.0, 0.0]}
+    expected_scale = {top1.id: [2.0, 2.0, 2.0], top2.id: [1.0, 1.0, 1.0], top3.id: [0.5, 0.5, 0.5]}
+    for top_id, version in expected_version.items():
+        nested = tops[top_id].nested_instances[0]
+        assert nested.pinned_version == version
+        node = scene.index()[nested.node_map[inner_part]]
+        assert node.transform.position == expected_position[top_id]
+        assert node.transform.scale == expected_scale[top_id]
+    status = {b.name: b.status for b in scene.upgrade_batches}
+    assert status == {"第一批": "withdrawn", "第二批": "confirmed", "第三批": "confirmed"}
+    rolled_back = {r.top_instance_id for b in scene.upgrade_batches for r in b.rollback}
+    assert rolled_back == {top1.id, top2.id, top3.id}
