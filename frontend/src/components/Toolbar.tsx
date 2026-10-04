@@ -65,9 +65,7 @@ export function Toolbar() {
   const [previewing, setPreviewing] = useState(false);
   const [releaseChoice, setReleaseChoice] = useState("");
   const [deriving, setDeriving] = useState<ReleaseSnapshot | null>(null);
-  const [batchTarget, setBatchTarget] = useState<
-    { assemblyId: string; assemblyName: string; version: number } | null
-  >(null);
+  const [batchOpen, setBatchOpen] = useState(false);
 
   const [scenes, setScenes] = useState<SceneMeta[]>([]);
 
@@ -205,18 +203,8 @@ export function Toolbar() {
 
         <button
           disabled={assemblyHistory.length === 0 && assemblies.length === 0}
-          title="按使用批次分批采用子装配升级：同一发布总成的不同实例分别保留旧版或采用候选版"
-          onClick={() => {
-            const withVersion = assemblies.filter((d) => d.version > 1);
-            const pick = withVersion[0] ?? assemblies[0];
-            if (pick) {
-              setBatchTarget({
-                assemblyId: pick.id,
-                assemblyName: pick.name,
-                version: pick.version,
-              });
-            }
-          }}
+          title="按使用批次分批采用装配件升级：可在窗口内明确选择内层装配件，同一总成的不同嵌套实例分别保留旧版或采用候选版"
+          onClick={() => setBatchOpen(true)}
         >
           分批升级…
         </button>
@@ -267,20 +255,19 @@ export function Toolbar() {
           onClose={() => setDeriving(null)}
         />
       )}
-      {batchTarget && (
+      {batchOpen && (
         <BatchDialog
-          target={batchTarget}
           currentDefs={assemblies}
           history={assemblyHistory}
           batches={batches}
-          onPreview={(version) => fetchBatchPreview(batchTarget.assemblyId, version)}
-          onCreate={async (name, version, decisions) => {
-            const id = await createBatch(batchTarget.assemblyId, version, name);
+          onPreview={(assemblyId, version) => fetchBatchPreview(assemblyId, version)}
+          onCreate={async (assemblyId, name, version, decisions) => {
+            const id = await createBatch(assemblyId, version, name);
             await saveBatchDecisions(id, decisions);
             await confirmBatch(id);
           }}
-          onSaveOnly={async (name, version, decisions) => {
-            const id = await createBatch(batchTarget.assemblyId, version, name);
+          onSaveOnly={async (assemblyId, name, version, decisions) => {
+            const id = await createBatch(assemblyId, version, name);
             await saveBatchDecisions(id, decisions);
           }}
           onWithdraw={(id) => withdrawBatch(id)}
@@ -288,7 +275,7 @@ export function Toolbar() {
             await saveBatchDecisions(id, decisions);
             await confirmBatch(id);
           }}
-          onClose={() => setBatchTarget(null)}
+          onClose={() => setBatchOpen(false)}
         />
       )}
     </div>
@@ -305,7 +292,7 @@ function DeriveDialog({
 }: {
   release: ReleaseSnapshot;
   currentDefs: { id: string; name: string; version: number }[];
-  history: { id: string; version: number }[];
+  history: { id: string; name: string; version: number }[];
   onPreview: (upgrades: Record<string, number>) => Promise<ReleaseDerivePreview>;
   onApply: (upgrades: Record<string, number>) => Promise<void>;
   onClose: () => void;
@@ -589,7 +576,6 @@ function UpdateDialog({
 }
 
 function BatchDialog({
-  target,
   currentDefs,
   history,
   batches,
@@ -600,17 +586,18 @@ function BatchDialog({
   onContinue,
   onClose,
 }: {
-  target: { assemblyId: string; assemblyName: string; version: number };
   currentDefs: { id: string; name: string; version: number }[];
-  history: { id: string; version: number }[];
+  history: { id: string; name: string; version: number }[];
   batches: UpgradeBatch[];
-  onPreview: (version: number) => Promise<BatchUpgradePreview>;
+  onPreview: (assemblyId: string, version: number) => Promise<BatchUpgradePreview>;
   onCreate: (
+    assemblyId: string,
     name: string,
     version: number,
     decisions: BatchDecision[]
   ) => Promise<void>;
   onSaveOnly: (
+    assemblyId: string,
     name: string,
     version: number,
     decisions: BatchDecision[]
@@ -626,7 +613,18 @@ function BatchDialog({
     return [...set].sort((a, b) => a - b);
   };
 
-  const [version, setVersion] = useState(target.version);
+  const nameOf = (id: string): string =>
+    currentDefs.find((d) => d.id === id)?.name ??
+    history.find((d) => d.id === id)?.name ??
+    id;
+
+  const [assemblyId, setAssemblyId] = useState(
+    currentDefs.find((d) => d.version > 1)?.id ?? currentDefs[0]?.id ?? ""
+  );
+  const versions = assemblyId ? versionsOf(assemblyId) : [];
+  const [version, setVersion] = useState(
+    versions[versions.length - 1] ?? 1
+  );
   const [batchName, setBatchName] = useState("");
   const [preview, setPreview] = useState<BatchUpgradePreview | null>(null);
   const [choices, setChoices] = useState<Record<string, "keep" | "upgrade">>({});
@@ -635,25 +633,37 @@ function BatchDialog({
   const itemKey = (item: BatchPreviewItem) =>
     item.top_instance_id + "|" + item.path.join("/");
 
-  const refresh = async (ver: number) => {
+  const refresh = async (assembly: string, ver: number) => {
+    if (!assembly) {
+      setPreview(null);
+      return;
+    }
     setBusy(true);
     try {
-      const result = await onPreview(ver);
+      const result = await onPreview(assembly, ver);
       setPreview(result);
       const initial: Record<string, "keep" | "upgrade"> = {};
       for (const item of result.items) {
         if (!item.up_to_date) initial[itemKey(item)] = "keep";
       }
       setChoices(initial);
+    } catch {
+      setPreview(null);
     } finally {
       setBusy(false);
     }
   };
 
   useEffect(() => {
-    void refresh(version);
+    void refresh(assemblyId, version);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [assemblyId, version]);
+
+  const selectAssembly = (nextId: string) => {
+    setAssemblyId(nextId);
+    const nextVersions = versionsOf(nextId);
+    setVersion(nextVersions[nextVersions.length - 1] ?? 1);
+  };
 
   const decisionsFor = (): BatchDecision[] =>
     (preview?.items ?? []).map((item) => ({
@@ -663,23 +673,37 @@ function BatchDialog({
       action: item.up_to_date ? "upgrade" : (choices[itemKey(item)] ?? "keep"),
     }));
 
-  const relatedBatches = batches.filter((b) => b.assembly_id === target.assemblyId);
+  const relatedBatches = batches.filter((b) => b.assembly_id === assemblyId);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal update-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>分批采用「{target.assemblyName}」升级</h3>
+        <h3>分批采用装配件升级</h3>
         <p className="modal-hint">
-          同一发布总成的多个实例可分属不同批次：本批仅采用勾选的实例；未确认实例保持原版本，
-          两批共用子装配也不会互相带走覆盖与选择。
+          先明确选择目标装配件（外层或内层）：同一总成的多个嵌套实例可分属不同批次，
+          本批仅采用勾选的实例；未确认实例保持原版本，批次间共用子装配也不会互相带走覆盖与选择。
         </p>
+        <div className="update-instance-head">
+          <strong>目标装配件</strong>
+          <select
+            value={assemblyId}
+            onChange={(e) => selectAssembly(e.target.value)}
+            title="外层与内层装配件分别列出；选择内层即可升级各嵌套实例"
+          >
+            {currentDefs.map((def) => (
+              <option key={def.id} value={def.id}>
+                {def.name}（当前 v{def.version}）
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="update-instance-head">
           <strong>候选版本</strong>
           <select
             value={version}
             onChange={(e) => setVersion(Number(e.target.value))}
           >
-            {versionsOf(target.assemblyId).map((v) => (
+            {versions.map((v) => (
               <option key={v} value={v}>
                 v{v}
               </option>
@@ -694,7 +718,7 @@ function BatchDialog({
               <div key={batch.id} className="update-instance">
                 <div className="update-instance-head">
                   <strong>
-                    {batch.name}（候选 v{batch.candidate_version}）
+                    {batch.name}（{nameOf(batch.assembly_id)} 候选 v{batch.candidate_version}）
                   </strong>
                   <span className="badge">
                     {batch.status === "open"
@@ -706,9 +730,10 @@ function BatchDialog({
                   {batch.status === "open" && (
                     <button
                       className="primary"
-                      onClick={() => void onContinue(batch.id, decisionsFor())}
+                      title="确认该批此前保存的决定；若要调整，请用下方当前预览另存为新批次"
+                      onClick={() => void onContinue(batch.id, [])}
                     >
-                      用当前选择确认该批
+                      确认已保存的决定
                     </button>
                   )}
                   {batch.status === "confirmed" && (
@@ -795,6 +820,15 @@ function BatchDialog({
                     ))}
                   </ul>
                 )}
+                {item.added.length > 0 && (
+                  <ul className="update-list">
+                    {item.added.map((change) => (
+                      <li key={change.template_id}>
+                        新增部件：{change.path}（升级后随候选版引入）
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {item.selection_ref_impact.lost_refs.length > 0 && (
                   <ul className="update-list">
                     {item.selection_ref_impact.lost_refs.map((ref) => (
@@ -806,6 +840,9 @@ function BatchDialog({
                 )}
               </div>
             ))}
+            {preview.items.length === 0 && preview.missing.length === 0 && (
+              <p className="modal-hint">该装配件当前没有场景实例；请选择其他装配件。</p>
+            )}
           </div>
         )}
 
@@ -820,6 +857,7 @@ function BatchDialog({
             disabled={busy || !preview}
             onClick={() =>
               void onCreate(
+                assemblyId,
                 batchName || `批次 ${batches.length + 1}`,
                 version,
                 decisionsFor()
@@ -833,6 +871,7 @@ function BatchDialog({
             title="只保存本批决定到记录，稍后从保存的场景继续；现场不变"
             onClick={() =>
               void onSaveOnly(
+                assemblyId,
                 batchName || `批次 ${batches.length + 1}`,
                 version,
                 decisionsFor()
