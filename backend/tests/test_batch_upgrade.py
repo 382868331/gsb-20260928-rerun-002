@@ -2,7 +2,7 @@
 
 import pytest
 
-from backend import scene_ops
+from backend import scene_ops, storage
 from backend.models import BatchDecision, SelectionRef
 from backend.tests.test_release import _bump_inner, build_nested_assemblies
 
@@ -149,3 +149,105 @@ def test_nested_path_is_slot_key_for_selection_refs():
         template_id=inner_part,
     )
     assert scene_ops.resolve_selection(scene, ref) == nested.node_map[inner_part]
+
+
+def test_three_nested_instances_two_batches_persist_and_withdraw_first(tmp_path, monkeypatch):
+    scene, inner_def, outer_def, inner_part = build_nested_assemblies()
+    scene = scene_ops.instantiate_assembly(scene, outer_def.id, position=[-4, 0, 0])
+    top_a, top_b, top_c = scene.assembly_instances
+    slot = top_a.nested_instances[0].slot_key
+
+    scene = scene_ops.update_assembly_instance_transform(scene, top_a.node_map["__root__"], position=[5, 1, 0])
+    scene = scene_ops.update_assembly_instance_transform(scene, top_b.node_map["__root__"], position=[-4, -2, 0])
+    scene = scene_ops.update_assembly_instance_transform(scene, top_c.node_map["__root__"], position=[8, 3, 0])
+    for top, scale in ((top_a, [2, 2, 2]), (top_b, [3, 3, 3]), (top_c, [4, 4, 4])):
+        nested_node = top.nested_instances[0].node_map[inner_part]
+        scene = scene_ops.set_assembly_override(scene, nested_node, scale=scale)
+
+    scene, inner_def = _bump_inner(scene, inner_def, inner_part, [7, 0, 0])
+    outer_id = outer_def.id
+    inner_id = inner_def.id
+    preview = scene_ops.batch_upgrade_preview(scene, inner_id, 2)
+    assert [item["assembly_id"] for item in preview["items"]] == [inner_id] * 3
+    assert {tuple(item["path"]) for item in preview["items"]} == {(slot,)}
+
+    scene, batch1 = scene_ops.create_upgrade_batch(scene, inner_id, 2, "第一批")
+    scene = scene_ops.save_batch_decisions(scene, batch1.id, [
+        BatchDecision(top_instance_id=top_a.id, path=[slot], instance_name="A", action="upgrade"),
+        BatchDecision(top_instance_id=top_b.id, path=[slot], instance_name="B", action="keep"),
+        BatchDecision(top_instance_id=top_c.id, path=[slot], instance_name="C", action="upgrade"),
+    ])
+    scene = scene_ops.confirm_upgrade_batch(scene, batch1.id)
+    assert len(batch1.rollback) == 0
+
+    def assert_state(expected, scene_obj, *, statuses=("confirmed",)):
+        tops = {top.id: top for top in scene_obj.assembly_instances}
+        for top_id, version, scale, position in expected:
+            top = tops[top_id]
+            nested = tops[top_id].nested_instances[0]
+            assert top.assembly_id == outer_id
+            assert nested.assembly_id == inner_id
+            assert nested.pinned_version == version
+            assert nested.assembly_version == version
+            node = scene_obj.index()[nested.node_map[inner_part]]
+            assert node.transform.scale == scale
+            root = scene_obj.index()[top.node_map["__root__"]]
+            assert root.transform.position == position
+        assert [batch.status for batch in scene_obj.upgrade_batches[:len(statuses)]] == list(statuses)
+
+    assert_state([
+        (top_a.id, 2, [2.0, 2.0, 2.0], [5.0, 1.0, 0.0]),
+        (top_b.id, 1, [3.0, 3.0, 3.0], [-4.0, -2.0, 0.0]),
+        (top_c.id, 2, [4.0, 4.0, 4.0], [8.0, 3.0, 0.0]),
+    ], scene)
+    stored_batch1 = next(batch for batch in scene.upgrade_batches if batch.id == batch1.id)
+    assert len(stored_batch1.rollback) == 2
+    assert {
+        (record.assembly_id, record.top_instance_id, record.from_version, record.to_version)
+        for record in stored_batch1.rollback
+    } == {
+        (inner_id, top_a.id, 1, 2),
+        (inner_id, top_c.id, 1, 2),
+    }
+    refreshed_tops = {top.id: top for top in scene.assembly_instances}
+    for top_id in (top_a.id, top_c.id):
+        top = refreshed_tops[top_id]
+        node = scene.index()[top.nested_instances[0].node_map[inner_part]]
+        assert node.transform.position == [7.0, 0.0, 0.0]
+    node_b = scene.index()[refreshed_tops[top_b.id].nested_instances[0].node_map[inner_part]]
+    assert node_b.transform.position == [1.0, 0.0, 0.0]
+
+    monkeypatch.setenv("SCENE_STORE_DIR", str(tmp_path))
+    storage.save_scene("nested-batch", scene)
+    reopened = storage.load_scene("nested-batch")
+    assert_state([
+        (top_a.id, 2, [2.0, 2.0, 2.0], [5.0, 1.0, 0.0]),
+        (top_b.id, 1, [3.0, 3.0, 3.0], [-4.0, -2.0, 0.0]),
+        (top_c.id, 2, [4.0, 4.0, 4.0], [8.0, 3.0, 0.0]),
+    ], reopened)
+
+    reopened, batch2 = scene_ops.create_upgrade_batch(reopened, inner_id, 2, "第二批")
+    reopened = scene_ops.save_batch_decisions(reopened, batch2.id, [
+        BatchDecision(top_instance_id=top_b.id, path=[slot], instance_name="B", action="upgrade"),
+    ])
+    reopened = scene_ops.confirm_upgrade_batch(reopened, batch2.id)
+    assert_state([
+        (top_a.id, 2, [2.0, 2.0, 2.0], [5.0, 1.0, 0.0]),
+        (top_b.id, 2, [3.0, 3.0, 3.0], [-4.0, -2.0, 0.0]),
+        (top_c.id, 2, [4.0, 4.0, 4.0], [8.0, 3.0, 0.0]),
+    ], reopened, statuses=("confirmed", "confirmed"))
+    stored_batch2 = next(batch for batch in reopened.upgrade_batches if batch.id == batch2.id)
+    assert len(stored_batch2.rollback) == 1
+    assert stored_batch2.rollback[0].assembly_id == inner_id
+    assert (stored_batch2.rollback[0].from_version, stored_batch2.rollback[0].to_version) == (1, 2)
+
+    storage.save_scene("nested-batch", reopened)
+    after_second = storage.load_scene("nested-batch")
+    withdrawn = scene_ops.withdraw_upgrade_batch(after_second, batch1.id)
+    assert_state([
+        (top_a.id, 1, [2.0, 2.0, 2.0], [5.0, 1.0, 0.0]),
+        (top_b.id, 2, [3.0, 3.0, 3.0], [-4.0, -2.0, 0.0]),
+        (top_c.id, 1, [4.0, 4.0, 4.0], [8.0, 3.0, 0.0]),
+    ], withdrawn, statuses=("withdrawn", "confirmed"))
+    assert withdrawn.upgrade_batches[0].status == "withdrawn"
+    assert withdrawn.upgrade_batches[1].status == "confirmed"

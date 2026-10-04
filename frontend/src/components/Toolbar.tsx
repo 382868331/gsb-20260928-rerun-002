@@ -65,6 +65,7 @@ export function Toolbar() {
   const [previewing, setPreviewing] = useState(false);
   const [releaseChoice, setReleaseChoice] = useState("");
   const [deriving, setDeriving] = useState<ReleaseSnapshot | null>(null);
+  const [batchChoice, setBatchChoice] = useState("");
   const [batchTarget, setBatchTarget] = useState<
     { assemblyId: string; assemblyName: string; version: number } | null
   >(null);
@@ -207,8 +208,7 @@ export function Toolbar() {
           disabled={assemblyHistory.length === 0 && assemblies.length === 0}
           title="按使用批次分批采用子装配升级：同一发布总成的不同实例分别保留旧版或采用候选版"
           onClick={() => {
-            const withVersion = assemblies.filter((d) => d.version > 1);
-            const pick = withVersion[0] ?? assemblies[0];
+            const pick = assemblies.find((d) => d.id === batchChoice) ?? assemblies[0];
             if (pick) {
               setBatchTarget({
                 assemblyId: pick.id,
@@ -220,6 +220,19 @@ export function Toolbar() {
         >
           分批升级…
         </button>
+        <select
+          value={batchChoice}
+          onChange={(e) => setBatchChoice(e.target.value)}
+          disabled={assemblies.length === 0}
+          title="明确选择要分批升级的外层或内层装配件"
+        >
+          <option value="">分批目标…</option>
+          {assemblies.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name} v{item.version}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="spacer" />
       <select
@@ -269,6 +282,7 @@ export function Toolbar() {
       )}
       {batchTarget && (
         <BatchDialog
+          key={batchTarget.assemblyId}
           target={batchTarget}
           currentDefs={assemblies}
           history={assemblyHistory}
@@ -284,9 +298,12 @@ export function Toolbar() {
             await saveBatchDecisions(id, decisions);
           }}
           onWithdraw={(id) => withdrawBatch(id)}
-          onContinue={async (id, decisions) => {
-            await saveBatchDecisions(id, decisions);
+          onContinue={async (id) => {
             await confirmBatch(id);
+          }}
+          onTargetChange={(target) => {
+            setBatchChoice(target.assemblyId);
+            setBatchTarget(target);
           }}
           onClose={() => setBatchTarget(null)}
         />
@@ -598,6 +615,7 @@ function BatchDialog({
   onSaveOnly,
   onWithdraw,
   onContinue,
+  onTargetChange,
   onClose,
 }: {
   target: { assemblyId: string; assemblyName: string; version: number };
@@ -616,7 +634,8 @@ function BatchDialog({
     decisions: BatchDecision[]
   ) => Promise<void>;
   onWithdraw: (batchId: string) => Promise<void>;
-  onContinue: (batchId: string, decisions: BatchDecision[]) => Promise<void>;
+  onContinue: (batchId: string) => Promise<void>;
+  onTargetChange: (target: { assemblyId: string; assemblyName: string; version: number }) => void;
   onClose: () => void;
 }) {
   const versionsOf = (assemblyId: string): number[] => {
@@ -641,8 +660,22 @@ function BatchDialog({
       const result = await onPreview(ver);
       setPreview(result);
       const initial: Record<string, "keep" | "upgrade"> = {};
+      const savedDecisions = batches
+        .filter(
+          (batch) =>
+            batch.status === "open" &&
+            batch.assembly_id === target.assemblyId &&
+            batch.candidate_version === ver
+        )
+        .flatMap((batch) => batch.decisions);
+      const saved = new Map(
+        savedDecisions.map((decision) => [
+          decision.top_instance_id + "|" + decision.path.join("/"),
+          decision.action,
+        ])
+      );
       for (const item of result.items) {
-        if (!item.up_to_date) initial[itemKey(item)] = "keep";
+        if (!item.up_to_date) initial[itemKey(item)] = saved.get(itemKey(item)) ?? "keep";
       }
       setChoices(initial);
     } finally {
@@ -653,7 +686,7 @@ function BatchDialog({
   useEffect(() => {
     void refresh(version);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
+  }, [version, batches, target.assemblyId]);
 
   const decisionsFor = (): BatchDecision[] =>
     (preview?.items ?? []).map((item) => ({
@@ -674,6 +707,27 @@ function BatchDialog({
           两批共用子装配也不会互相带走覆盖与选择。
         </p>
         <div className="update-instance-head">
+          <strong>目标装配件</strong>
+          <select
+            value={target.assemblyId}
+            onChange={(e) => {
+              const next = currentDefs.find((item) => item.id === e.target.value);
+              if (next) {
+                setVersion(next.version);
+                onTargetChange({
+                  assemblyId: next.id,
+                  assemblyName: next.name,
+                  version: next.version,
+                });
+              }
+            }}
+          >
+            {currentDefs.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} v{item.version}
+              </option>
+            ))}
+          </select>
           <strong>候选版本</strong>
           <select
             value={version}
@@ -706,9 +760,9 @@ function BatchDialog({
                   {batch.status === "open" && (
                     <button
                       className="primary"
-                      onClick={() => void onContinue(batch.id, decisionsFor())}
+                      onClick={() => void onContinue(batch.id)}
                     >
-                      用当前选择确认该批
+                      确认该批已保存决定
                     </button>
                   )}
                   {batch.status === "confirmed" && (
